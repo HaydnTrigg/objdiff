@@ -85,9 +85,20 @@ impl From<&AppConfig> for BuildConfig {
             project_dir: config.project_dir.clone(),
             custom_make: config.custom_make.clone(),
             custom_args: config.custom_args.clone(),
+            custom_make_all_args: config.custom_make_all_args.clone(),
             selected_wsl_distro: config.selected_wsl_distro.clone(),
         }
     }
+}
+
+pub fn build_config(state: &AppState) -> BuildConfig {
+    let mut config = BuildConfig::from(&state.config);
+    if let Some(project) = &state.current_project_config {
+        if let Some(args) = &project.custom_make_all_args {
+            config.custom_make_all_args = Some(args.clone());
+        }
+    }
+    config
 }
 
 pub fn create_objdiff_config(state: &AppState) -> objdiff::ObjDiffConfig {
@@ -152,7 +163,7 @@ pub fn start_find_similar_job(
         source_column: column,
         objects,
         diff_config: state.effective_diff_config(),
-        build_config: BuildConfig::from(&state.config),
+        build_config: build_config(state),
         build_base: state.config.build_base,
         build_target: state.config.build_target,
     };

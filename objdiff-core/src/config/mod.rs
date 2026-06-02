@@ -12,6 +12,26 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use path::unix_path_serde_option;
 use typed_path::Utf8UnixPathBuf;
 
+/// Deserialize `Option<Vec<String>>` from either a single string or an array of strings.
+#[cfg(feature = "serde")]
+fn string_or_vec_opt<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::Deserialize;
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        String(String),
+        Vec(Vec<String>),
+    }
+
+    Ok(match Option::<StringOrVec>::deserialize(deserializer)? {
+        None => None,
+        Some(StringOrVec::String(s)) => Some(vec![s]),
+        Some(StringOrVec::Vec(v)) => Some(v),
+    })
+}
+
 #[derive(Default, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(default))]
 pub struct ProjectConfig {
@@ -21,6 +41,15 @@ pub struct ProjectConfig {
     pub custom_make: Option<String>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub custom_args: Option<Vec<String>>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "string_or_vec_opt"
+        )
+    )]
+    pub custom_make_all_args: Option<Vec<String>>,
     #[cfg_attr(
         feature = "serde",
         serde(with = "unix_path_serde_option", skip_serializing_if = "Option::is_none")
