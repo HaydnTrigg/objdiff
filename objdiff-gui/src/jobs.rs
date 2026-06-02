@@ -93,10 +93,10 @@ impl From<&AppConfig> for BuildConfig {
 
 pub fn build_config(state: &AppState) -> BuildConfig {
     let mut config = BuildConfig::from(&state.config);
-    if let Some(project) = &state.current_project_config {
-        if let Some(args) = &project.custom_make_all_args {
-            config.custom_make_all_args = Some(args.clone());
-        }
+    if let Some(project) = &state.current_project_config
+        && let Some(args) = &project.custom_make_all_args
+    {
+        config.custom_make_all_args = Some(args.clone());
     }
     config
 }
