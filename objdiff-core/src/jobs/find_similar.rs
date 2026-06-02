@@ -4,7 +4,7 @@ use anyhow::Result;
 use typed_path::Utf8PlatformPathBuf;
 
 use crate::{
-    build::{BuildConfig, run_make},
+    build::{BuildConfig, run_make, run_make_all},
     diff::{DiffObjConfig, DiffSide, display::InstructionPart, find_similar_code_symbols},
     jobs::{Job, JobContext, JobResult, JobState, start_job, update_status},
     obj::{InstructionArg, read},
@@ -124,6 +124,14 @@ fn run_find_similar(
     let total = config.objects.len() as u32;
     let mut all_matches = Vec::new();
 
+    // If custom_make_all_args is set and a build is needed, run it once up front instead of
+    // invoking make per object file.
+    let use_make_all = config.build_config.custom_make_all_args.is_some();
+    if use_make_all {
+        update_status(context, "Building all objects".to_string(), 0, total + 1, &cancel)?;
+        run_make_all(&config.build_config);
+    }
+
     for (idx, scan_obj) in config.objects.iter().enumerate() {
         update_status(context, format!("Scanning {}", scan_obj.name), idx as u32, total, &cancel)?;
 
@@ -136,7 +144,8 @@ fn run_find_similar(
             };
             let Some(path) = path else { continue };
 
-            if should_build
+            if !use_make_all
+                && should_build
                 && let Some(project_dir) = project_dir
                 && let Ok(rel_path) = path.strip_prefix(project_dir)
             {

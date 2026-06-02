@@ -27,6 +27,7 @@ pub struct BuildConfig {
     pub project_dir: Option<Utf8PlatformPathBuf>,
     pub custom_make: Option<String>,
     pub custom_args: Option<Vec<String>>,
+    pub custom_make_all_args: Option<Vec<String>>,
     #[allow(unused)]
     pub selected_wsl_distro: Option<String>,
 }
@@ -101,6 +102,81 @@ pub fn run_make(config: &BuildConfig, arg: &Utf8UnixPath) -> BuildStatus {
         }
     };
     // Try from_utf8 first to avoid copying the buffer if it's valid, then fall back to from_utf8_lossy
+    let stdout = String::from_utf8(output.stdout)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+    let stderr = String::from_utf8(output.stderr)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+    BuildStatus { success: output.status.success(), cmdline, stdout, stderr }
+}
+
+/// Run `custom_make` with `custom_make_all_args` (no per-file target) to build all objects at once.
+/// Returns a successful no-op `BuildStatus` if `config.custom_make_all_args` is `None`.
+pub fn run_make_all(config: &BuildConfig) -> BuildStatus {
+    let Some(all_args) = &config.custom_make_all_args else {
+        return BuildStatus::default();
+    };
+    let Some(cwd) = &config.project_dir else {
+        return BuildStatus {
+            success: false,
+            stderr: "Missing project dir".to_string(),
+            ..Default::default()
+        };
+    };
+    let make = config.custom_make.as_deref().unwrap_or("make");
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = Command::new(make);
+        command.current_dir(cwd).args(all_args);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        use alloc::borrow::Cow;
+        use std::os::windows::process::CommandExt;
+
+        let mut command = if config.selected_wsl_distro.is_some() {
+            Command::new("wsl")
+        } else {
+            Command::new(make)
+        };
+        if let Some(distro) = &config.selected_wsl_distro {
+            let wsl_path_prefix = format!("\\\\wsl.localhost\\{}", distro);
+            let cwd = match cwd.strip_prefix(wsl_path_prefix) {
+                Ok(new_cwd) => Cow::Owned(
+                    Utf8UnixPath::new("/").join(new_cwd.with_unix_encoding()).into_string(),
+                ),
+                Err(_) => Cow::Borrowed(cwd.as_str()),
+            };
+            command
+                .arg("--cd")
+                .arg::<&str>(cwd.as_ref())
+                .arg("-d")
+                .arg(distro)
+                .arg("--")
+                .arg(make)
+                .args(all_args);
+        } else {
+            command.current_dir(cwd).args(all_args);
+        }
+        command.creation_flags(winapi::um::winbase::CREATE_NO_WINDOW);
+        command
+    };
+    let mut cmdline = shell_escape::escape(command.get_program().to_string_lossy()).into_owned();
+    for arg in command.get_args() {
+        cmdline.push(' ');
+        cmdline.push_str(shell_escape::escape(arg.to_string_lossy()).as_ref());
+    }
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(e) => {
+            return BuildStatus {
+                success: false,
+                cmdline,
+                stdout: Default::default(),
+                stderr: e.to_string(),
+            };
+        }
+    };
     let stdout = String::from_utf8(output.stdout)
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
     let stderr = String::from_utf8(output.stderr)
