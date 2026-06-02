@@ -276,6 +276,11 @@ fn create_objdiff_config(state: &AppState) -> ObjDiffConfig {
                 .as_ref()
                 .and_then(|c| c.custom_args.as_ref())
                 .cloned(),
+            custom_make_all_args: state
+                .project_config
+                .as_ref()
+                .and_then(|c| c.custom_make_all_args.as_ref())
+                .cloned(),
             selected_wsl_distro: None,
         },
         build_base: state.project_config.as_ref().is_some_and(|p| p.build_base.unwrap_or(true)),
@@ -360,6 +365,9 @@ impl AppState {
                 JobResult::CheckUpdate(_) => todo!("CheckUpdate"),
                 JobResult::Update(_) => todo!("Update"),
                 JobResult::CreateScratch(_) => todo!("CreateScratch"),
+                JobResult::FindSimilarBuild(_) => {
+                    unreachable!("Unexpected JobResult::FindSimilarBuild")
+                }
                 JobResult::FindSimilar(_) => unreachable!("Unexpected JobResult::FindSimilar"),
             }
         }

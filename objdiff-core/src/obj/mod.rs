@@ -254,7 +254,7 @@ pub enum FlowAnalysisValue {
     Text(String),
 }
 
-pub trait FlowAnalysisResult: core::fmt::Debug + Send {
+pub trait FlowAnalysisResult: core::fmt::Debug + Send + Sync {
     fn get_argument_value_at_address(
         &self,
         address: u64,

@@ -212,6 +212,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub custom_args: Option<Vec<String>>,
     #[serde(default)]
+    pub custom_make_all_args: Option<Vec<String>>,
+    #[serde(default)]
     pub selected_wsl_distro: Option<String>,
     #[serde(default, with = "platform_path_serde_option")]
     pub project_dir: Option<Utf8PlatformPathBuf>,
@@ -245,6 +247,7 @@ impl Default for AppConfig {
             version: AppConfigVersion::default().version,
             custom_make: None,
             custom_args: None,
+            custom_make_all_args: None,
             selected_wsl_distro: None,
             project_dir: None,
             target_obj_dir: None,
@@ -556,7 +559,7 @@ impl App {
             }
             _ => true,
         });
-        diff_state.pre_update(jobs, &self.state);
+        diff_state.pre_update(ctx, jobs, &self.state);
         config_state.pre_update(jobs, &self.state);
         debug_assert!(jobs.results.is_empty());
     }

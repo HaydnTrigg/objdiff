@@ -1,10 +1,13 @@
-use std::{sync::mpsc::Receiver, task::Waker};
+use std::{
+    sync::{Mutex, mpsc::Receiver},
+    task::Waker,
+};
 
 use anyhow::Result;
 use typed_path::Utf8PlatformPathBuf;
 
 use crate::{
-    build::{BuildConfig, run_make},
+    build::{BuildConfig, run_make, run_make_all},
     diff::{DiffObjConfig, DiffSide, display::InstructionPart, find_similar_code_symbols},
     jobs::{Job, JobContext, JobResult, JobState, start_job, update_status},
     obj::{InstructionArg, read},
@@ -40,11 +43,41 @@ pub struct SimilarFunctionMatch {
     pub object_name: String,
 }
 
+pub struct FindSimilarBuildResult {
+    /// Config forwarded to the scan job that should start next.
+    pub scan_config: FindSimilarConfig,
+}
+
 pub struct FindSimilarResult {
     pub source_symbol_name: String,
     pub source_column: usize,
     pub matches: Vec<SimilarFunctionMatch>,
 }
+
+// ---------------------------------------------------------------------------
+// Build job: runs run_make_all then hands config to the scan job.
+// ---------------------------------------------------------------------------
+
+fn run_find_similar_build(
+    context: &JobContext,
+    cancel: Receiver<()>,
+    config: FindSimilarConfig,
+) -> Result<Box<FindSimilarBuildResult>> {
+    update_status(context, "Building all objects".to_string(), 0, 1, &cancel)?;
+    run_make_all(&config.build_config);
+    Ok(Box::new(FindSimilarBuildResult { scan_config: config }))
+}
+
+pub fn start_find_similar_build(waker: Waker, config: FindSimilarConfig) -> JobState {
+    start_job(waker, "Build (find similar)", Job::FindSimilarBuild, move |context, cancel| {
+        run_find_similar_build(&context, cancel, config)
+            .map(|r| JobResult::FindSimilarBuild(Some(r)))
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Scan job: reads source symbol then scans all objects in parallel.
+// ---------------------------------------------------------------------------
 
 fn run_find_similar(
     context: &JobContext,
@@ -122,47 +155,61 @@ fn run_find_similar(
     }
 
     let total = config.objects.len() as u32;
-    let mut all_matches = Vec::new();
+    // Report initial progress and check for early cancellation.
+    update_status(context, "Scanning objects".to_string(), 0, total, &cancel)?;
 
-    for (idx, scan_obj) in config.objects.iter().enumerate() {
-        update_status(context, format!("Scanning {}", scan_obj.name), idx as u32, total, &cancel)?;
+    // Scan all objects in parallel. Each thread handles one ScanObject.
+    // source_obj is shared read-only (Object: Sync via FlowAnalysisResult: Sync).
+    let all_matches: Mutex<Vec<SimilarFunctionMatch>> = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for scan_obj in &config.objects {
+            let matches_sink = &all_matches;
+            scope.spawn(|| {
+                let project_dir = config.build_config.project_dir.as_deref();
 
-        let project_dir = config.build_config.project_dir.as_deref();
+                for side in [DiffSide::Target, DiffSide::Base] {
+                    let (path, should_build) = match side {
+                        DiffSide::Target => (scan_obj.target_path.as_ref(), config.build_target),
+                        DiffSide::Base => (scan_obj.base_path.as_ref(), config.build_base),
+                    };
+                    let Some(path) = path else { continue };
 
-        for side in [DiffSide::Target, DiffSide::Base] {
-            let (path, should_build) = match side {
-                DiffSide::Target => (scan_obj.target_path.as_ref(), config.build_target),
-                DiffSide::Base => (scan_obj.base_path.as_ref(), config.build_base),
-            };
-            let Some(path) = path else { continue };
+                    if should_build
+                        && let Some(project_dir) = project_dir
+                        && let Ok(rel_path) = path.strip_prefix(project_dir)
+                    {
+                        run_make(&config.build_config, rel_path.with_unix_encoding().as_ref());
+                    }
 
-            if should_build
-                && let Some(project_dir) = project_dir
-                && let Ok(rel_path) = path.strip_prefix(project_dir)
-            {
-                run_make(&config.build_config, rel_path.with_unix_encoding().as_ref());
-            }
-
-            let Ok(obj) = read::read(path.as_ref(), &config.diff_config, side) else { continue };
-            let similar = find_similar_code_symbols(
-                &source_obj,
-                source_symbol_idx,
-                &obj,
-                &config.diff_config,
-            );
-            let side_label = if side == DiffSide::Target { "target" } else { "base" };
-            for sim in similar {
-                let symbol = &obj.symbols[sim.symbol_idx];
-                all_matches.push(SimilarFunctionMatch {
-                    symbol_name: symbol.name.clone(),
-                    demangled_name: symbol.demangled_name.clone(),
-                    match_percent: sim.match_percent,
-                    object_name: format!("{} ({})", scan_obj.name, side_label),
-                });
-            }
+                    let Ok(obj) = read::read(path.as_ref(), &config.diff_config, side) else {
+                        continue;
+                    };
+                    let similar = find_similar_code_symbols(
+                        &source_obj,
+                        source_symbol_idx,
+                        &obj,
+                        &config.diff_config,
+                    );
+                    let side_label = if side == DiffSide::Target { "target" } else { "base" };
+                    let mut sink = matches_sink.lock().unwrap();
+                    for sim in similar {
+                        let symbol = &obj.symbols[sim.symbol_idx];
+                        sink.push(SimilarFunctionMatch {
+                            symbol_name: symbol.name.clone(),
+                            demangled_name: symbol.demangled_name.clone(),
+                            match_percent: sim.match_percent,
+                            object_name: format!("{} ({})", scan_obj.name, side_label),
+                        });
+                    }
+                }
+            });
         }
-    }
+    });
 
+    // Check for cancellation after threads complete.
+    update_status(context, "Sorting results".to_string(), total, total, &cancel)?;
+
+    let mut all_matches = all_matches.into_inner().unwrap();
     all_matches.sort_by(|a, b| {
         b.match_percent.partial_cmp(&a.match_percent).unwrap_or(std::cmp::Ordering::Equal)
     });

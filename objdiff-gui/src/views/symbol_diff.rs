@@ -14,8 +14,10 @@ use objdiff_core::{
         },
     },
     jobs::{
-        Job, JobQueue, JobResult, create_scratch::CreateScratchResult,
-        find_similar::SimilarFunctionMatch, objdiff::ObjDiffResult,
+        Job, JobQueue, JobResult,
+        create_scratch::CreateScratchResult,
+        find_similar::{SimilarFunctionMatch, start_find_similar},
+        objdiff::ObjDiffResult,
     },
     obj::{Object, Section, SectionKind, Symbol, SymbolFlag},
 };
@@ -24,7 +26,7 @@ use regex::{Regex, RegexBuilder};
 use crate::{
     app::AppStateRef,
     hotkeys,
-    jobs::{is_create_scratch_available, start_create_scratch, start_find_similar_job},
+    jobs::{egui_waker, is_create_scratch_available, start_create_scratch, start_find_similar_job},
     views::{
         appearance::Appearance,
         diff::{context_menu_items_ui, hover_items_ui},
@@ -188,7 +190,10 @@ pub struct SymbolViewState {
 }
 
 impl DiffViewState {
-    pub fn pre_update(&mut self, jobs: &mut JobQueue, state: &AppStateRef) {
+    pub fn pre_update(&mut self, ctx: &egui::Context, jobs: &mut JobQueue, state: &AppStateRef) {
+        // Configs from completed FindSimilarBuild jobs to be pushed as scan jobs after retain_mut.
+        let mut pending_scans = Vec::new();
+
         jobs.results.retain_mut(|result| match result {
             JobResult::ObjDiff(result) => {
                 self.build = take(result);
@@ -214,6 +219,15 @@ impl DiffViewState {
                 self.scratch = take(result);
                 false
             }
+            JobResult::FindSimilarBuild(result) => {
+                // Build job finished — queue a scan job if we're still in the similar panel.
+                if let Some(result) = take(result)
+                    && self.similar_functions.is_some()
+                {
+                    pending_scans.push(result.scan_config);
+                }
+                false
+            }
             JobResult::FindSimilar(result) => {
                 if let Some(result) = take(result)
                     && let Some(state) = &mut self.similar_functions
@@ -226,6 +240,10 @@ impl DiffViewState {
             }
             _ => true,
         });
+
+        for config in pending_scans {
+            jobs.push(start_find_similar(egui_waker(ctx), config));
+        }
         self.build_running = jobs.is_running(Job::ObjDiff);
         self.scratch_running = jobs.is_running(Job::CreateScratch);
 
@@ -427,6 +445,7 @@ impl DiffViewState {
             }
             DiffViewAction::CloseSimilarFunctions => {
                 self.similar_functions = None;
+                jobs.cancel_kind(Job::FindSimilarBuild);
                 jobs.cancel_kind(Job::FindSimilar);
             }
             DiffViewAction::SetSimilarSearch(search) => {
