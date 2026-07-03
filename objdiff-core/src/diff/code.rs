@@ -289,6 +289,53 @@ fn ins_data_literals_eq(
     left_literals == right_literals
 }
 
+/// Strip the leading `?<ident>@?<scope>` of an MSVC function-local static's
+/// decorated name, returning the stable `??<func>@…@4<type>@<access>` tail
+/// (or `None` if `name` isn't such a local static).
+///
+/// MSVC decorates a function-local `static` as
+/// `?<localname>@?<scope>@??<func>@<sig>@4<type>@<access>`. Neither the
+/// `<localname>` (the source's variable name — e.g. a macro's `info` vs
+/// `__info`) nor the `<scope>` disambiguator (a compiler-assigned index that
+/// shifts with the surrounding function body) is stable across recompiles, but
+/// the enclosing function, type and storage class uniquely identify the static.
+/// The `<scope>` is an MSVC mangled number: a single digit `0`..`9`, or one or
+/// more base-16 nibbles `A`(0)..`P`(15) terminated by `@`.
+fn canonical_local_static(name: &str) -> Option<&str> {
+    // `?<ident>@`
+    let rest = name.strip_prefix('?')?;
+    let at = rest.find('@')?;
+    let ident = &rest[..at];
+    if ident.is_empty() || !ident.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    // `?<scope>`
+    let rest = rest[at + 1..].strip_prefix('?')?;
+    let tail = if rest.starts_with(|c: char| c.is_ascii_digit()) {
+        &rest[1..]
+    } else {
+        let end = rest.find('@')?;
+        let nibbles = &rest[..end];
+        if nibbles.is_empty() || !nibbles.bytes().all(|b| (b'A'..=b'P').contains(&b)) {
+            return None;
+        }
+        &rest[end + 1..]
+    };
+    // The remainder must open the enclosing nested name (`??<func>@…`).
+    tail.starts_with("??").then_some(tail)
+}
+
+/// True if both names are MSVC function-local statics of the same enclosing
+/// function, type and storage class (ignoring their unstable local-name/scope
+/// prefixes). Used to match e.g. `?info@?M@??f@…@4Uinfo@@B` against
+/// `?__info@?6??f@…@4Uinfo@@B` — the same static under a different macro/compile.
+fn local_static_eq(left: &str, right: &str) -> bool {
+    match (canonical_local_static(left), canonical_local_static(right)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 fn reloc_eq(
     left_obj: &Object,
     right_obj: &Object,
@@ -318,6 +365,14 @@ fn reloc_eq(
             if !section_name_eq(left_obj, right_obj, sl, sr) {
                 return false;
             };
+            // MSVC function-local statics (assert-info records, etc.) match on
+            // their stable function+type tail — their local-name/scope
+            // decoration and their debug-metadata contents (message text, line
+            // number) legitimately vary across recompiles and are diffed as
+            // data separately.
+            if local_static_eq(&left_reloc.symbol.name, &right_reloc.symbol.name) {
+                return true;
+            }
             let mut name_ok = false;
             if diff_config.function_reloc_diffs == FunctionRelocDiffs::DataValue {
                 // Ignore names entirely
@@ -346,7 +401,15 @@ fn reloc_eq(
             }
             name_ok && value_ok
         }
-        (Some(_), None) | (None, Some(_)) | (None, None) => symbol_name_addend_matches,
+        // Section-less (external/COMDAT) references — e.g. an inline function's
+        // assert-info static referenced from another object. Match by exact name
+        // or, for MSVC function-local statics, by the stable function+type tail
+        // at the same addend (their local-name/scope decoration is unstable).
+        (Some(_), None) | (None, Some(_)) | (None, None) => {
+            symbol_name_addend_matches
+                || (left_reloc.relocation.addend == right_reloc.relocation.addend
+                    && local_static_eq(&left_reloc.symbol.name, &right_reloc.symbol.name))
+        }
     }
 }
 
@@ -525,4 +588,59 @@ fn diff_instruction(
     }
 
     Ok(InstructionDiffResult::new(InstructionDiffKind::None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonical_local_static, local_static_eq};
+
+    #[test]
+    fn canonical_local_static_strips_name_and_scope() {
+        // Digit scope (`?6`) and macro name `__info`.
+        assert_eq!(
+            canonical_local_static("?__info@?6??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B"),
+            Some("??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B")
+        );
+        // Nibble scope (`?M@`) and source name `info` — the reference side.
+        assert_eq!(
+            canonical_local_static("?info@?M@??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B"),
+            Some("??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B")
+        );
+    }
+
+    #[test]
+    fn local_static_eq_matches_across_name_and_scope() {
+        // Same function/type/storage, different local name + scope index → equal.
+        assert!(local_static_eq(
+            "?info@?M@??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B",
+            "?__info@?6??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B"
+        ));
+    }
+
+    #[test]
+    fn local_static_eq_rejects_different_functions() {
+        // Different enclosing function → not equal, even with matching name/type.
+        assert!(!local_static_eq(
+            "?__info@?6??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B",
+            "?__info@?6??release@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B"
+        ));
+    }
+
+    #[test]
+    fn local_static_eq_rejects_different_types() {
+        // Same function, different static type → not equal.
+        assert!(!local_static_eq(
+            "?__info@?6??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B",
+            "?__info@?6??acquire@?$c_reference_count@F@@QEAAXXZ@4Uother_type@@B"
+        ));
+    }
+
+    #[test]
+    fn canonical_local_static_rejects_non_locals() {
+        // Ordinary global/function symbols must not be treated as local statics.
+        assert_eq!(canonical_local_static("?acquire@?$c_reference_count@F@@QEAAXXZ"), None);
+        assert_eq!(canonical_local_static("?g_some_global@@3HA"), None);
+        // Missing the `??` nested-name introducer after the scope.
+        assert_eq!(canonical_local_static("?info@?6@not_a_nested_name"), None);
+    }
 }
