@@ -603,12 +603,16 @@ mod tests {
     fn canonical_local_static_strips_name_and_scope() {
         // Digit scope (`?6`) and macro name `__info`.
         assert_eq!(
-            canonical_local_static("?__info@?6??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B"),
+            canonical_local_static(
+                "?__info@?6??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B"
+            ),
             Some("??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B")
         );
         // Nibble scope (`?M@`) and source name `info` — the reference side.
         assert_eq!(
-            canonical_local_static("?info@?M@??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B"),
+            canonical_local_static(
+                "?info@?M@??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B"
+            ),
             Some("??acquire@?$c_reference_count@F@@QEAAXXZ@4Us_slim_assert_info@@B")
         );
     }
