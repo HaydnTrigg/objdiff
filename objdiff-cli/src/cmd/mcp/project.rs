@@ -91,6 +91,7 @@ impl LoadedProject {
             project_dir: Some(self.dir.clone()),
             custom_make: self.config.custom_make.clone(),
             custom_args: self.config.custom_args.clone(),
+            custom_make_all_args: self.config.custom_make_all_args.clone(),
             selected_wsl_distro: None,
         };
         Ok((build_config, rel_unix))
