@@ -90,9 +90,11 @@ pub fn run_make(config: &BuildConfig, arg: &Utf8UnixPath) -> BuildStatus {
         cmdline.push(' ');
         cmdline.push_str(shell_escape::escape(arg.to_string_lossy()).as_ref());
     }
+    log::info!("run_make: {cmdline}");
     let output = match command.output() {
         Ok(output) => output,
         Err(e) => {
+            log::info!("run_make: failed to spawn: {e}");
             return BuildStatus {
                 success: false,
                 cmdline,
@@ -101,6 +103,7 @@ pub fn run_make(config: &BuildConfig, arg: &Utf8UnixPath) -> BuildStatus {
             };
         }
     };
+    log::info!("run_make: exited with {}", output.status);
     // Try from_utf8 first to avoid copying the buffer if it's valid, then fall back to from_utf8_lossy
     let stdout = String::from_utf8(output.stdout)
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
@@ -113,6 +116,7 @@ pub fn run_make(config: &BuildConfig, arg: &Utf8UnixPath) -> BuildStatus {
 /// Returns a successful no-op `BuildStatus` if `config.custom_make_all_args` is `None`.
 pub fn run_make_all(config: &BuildConfig) -> BuildStatus {
     let Some(all_args) = &config.custom_make_all_args else {
+        log::info!("run_make_all: custom_make_all_args not set, skipping");
         return BuildStatus::default();
     };
     let Some(cwd) = &config.project_dir else {
@@ -166,9 +170,11 @@ pub fn run_make_all(config: &BuildConfig) -> BuildStatus {
         cmdline.push(' ');
         cmdline.push_str(shell_escape::escape(arg.to_string_lossy()).as_ref());
     }
+    log::info!("run_make_all: {cmdline}");
     let output = match command.output() {
         Ok(output) => output,
         Err(e) => {
+            log::info!("run_make_all: failed to spawn: {e}");
             return BuildStatus {
                 success: false,
                 cmdline,
@@ -177,6 +183,7 @@ pub fn run_make_all(config: &BuildConfig) -> BuildStatus {
             };
         }
     };
+    log::info!("run_make_all: exited with {}", output.status);
     let stdout = String::from_utf8(output.stdout)
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
     let stderr = String::from_utf8(output.stderr)

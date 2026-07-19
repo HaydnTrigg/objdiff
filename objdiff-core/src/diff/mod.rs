@@ -573,15 +573,19 @@ fn apply_symbol_mappings(
     // Apply manual symbol mappings
     for (left_name, right_name) in &mapping_config.mappings {
         let Some(left_symbol_index) = left.symbol_by_name(left_name) else {
+            log::warn!("Symbol mapping: left symbol `{left_name}` not found");
             continue;
         };
         if left_used.contains(&left_symbol_index) {
+            log::warn!("Symbol mapping: left symbol `{left_name}` already matched");
             continue;
         }
         let Some(right_symbol_index) = right.symbol_by_name(right_name) else {
+            log::warn!("Symbol mapping: right symbol `{right_name}` not found");
             continue;
         };
         if right_used.contains(&right_symbol_index) {
+            log::warn!("Symbol mapping: right symbol `{right_name}` already matched");
             continue;
         }
         let left_section_kind = left

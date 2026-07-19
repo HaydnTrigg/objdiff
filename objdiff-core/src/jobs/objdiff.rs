@@ -34,6 +34,12 @@ fn run_build(
     cancel: Receiver<()>,
     config: ObjDiffConfig,
 ) -> Result<Box<ObjDiffResult>> {
+    if config.build_config.custom_make_all_args.is_some() {
+        log::info!(
+            "custom_make_all_args is set, but the build job always builds objects individually \
+             with run_make; run_make_all is only used by the find_similar job"
+        );
+    }
     let mut target_path_rel = None;
     let mut base_path_rel = None;
     if config.build_target || config.build_base {

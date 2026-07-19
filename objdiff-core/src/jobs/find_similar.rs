@@ -127,6 +127,12 @@ fn run_find_similar(
     // If custom_make_all_args is set and a build is needed, run it once up front instead of
     // invoking make per object file.
     let use_make_all = config.build_config.custom_make_all_args.is_some();
+    log::info!(
+        "find_similar: custom_make_all_args {} (build_target={}, build_base={})",
+        if use_make_all { "set, building all objects up front" } else { "not set" },
+        config.build_target,
+        config.build_base,
+    );
     if use_make_all {
         update_status(context, "Building all objects".to_string(), 0, total + 1, &cancel)?;
         run_make_all(&config.build_config);

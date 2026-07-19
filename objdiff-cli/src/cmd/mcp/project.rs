@@ -94,6 +94,13 @@ impl LoadedProject {
             custom_make_all_args: self.config.custom_make_all_args.clone(),
             selected_wsl_distro: None,
         };
+        tracing::info!(
+            "build_invocation for `{unit}`: custom_make={:?}, custom_args={:?}, \
+             custom_make_all_args={:?} (the mcp build tool builds per-unit with run_make)",
+            build_config.custom_make,
+            build_config.custom_args,
+            build_config.custom_make_all_args,
+        );
         Ok((build_config, rel_unix))
     }
 
