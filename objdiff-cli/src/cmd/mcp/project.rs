@@ -56,6 +56,14 @@ impl LoadedProject {
         Ok((target.map(to_std), base.map(to_std)))
     }
 
+    /// A unit's manual symbol mappings (target name -> base name), if any.
+    pub fn symbol_mappings(
+        &self,
+        unit: &str,
+    ) -> Result<std::collections::BTreeMap<String, String>> {
+        Ok(self.object(unit)?.symbol_mappings.clone().unwrap_or_default())
+    }
+
     /// Build the diff config for a unit: project options then unit options.
     pub fn apply_options(&self, unit: Option<&str>, config: &mut DiffObjConfig) -> Result<()> {
         if let Some(options) = &self.config.options {
