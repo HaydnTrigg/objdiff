@@ -23,11 +23,21 @@ pub const SEND: &str = "mcp ->";
 /// the whole thing.
 const PREVIEW_CHARS: usize = 800;
 
+/// An SSE frame made only of comment lines (`:`), i.e. a keep-alive ping. The
+/// http transport sends one every 15 seconds; they carry no protocol data.
+fn is_sse_keep_alive(text: &str) -> bool {
+    text.lines().all(|line| line.trim_end().is_empty() || line.starts_with(':'))
+}
+
 /// Log one raw message (a JSON-RPC line, or an HTTP/SSE body chunk).
 pub fn log_payload(direction: &str, bytes: &[u8]) {
     let text = String::from_utf8_lossy(bytes);
     let text = text.trim();
     if text.is_empty() {
+        return;
+    }
+    if is_sse_keep_alive(text) {
+        tracing::trace!("{direction} keep-alive");
         return;
     }
     match text.char_indices().nth(PREVIEW_CHARS) {
