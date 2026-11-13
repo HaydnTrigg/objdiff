@@ -310,6 +310,11 @@ fn reloc_eq(
     if relax_reloc_diffs {
         return true;
     }
+    if diff_config.function_reloc_diffs == FunctionRelocDiffs::NameAddress
+        && super::project_address_eq(left_reloc, right_reloc)
+    {
+        return true;
+    }
 
     let symbol_name_addend_matches = symbol_name_matches(left_reloc.symbol, right_reloc.symbol)
         && left_reloc.relocation.addend == right_reloc.relocation.addend;
