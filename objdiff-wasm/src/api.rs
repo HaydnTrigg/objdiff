@@ -788,6 +788,7 @@ impl From<MappingConfig> for diff::MappingConfig {
             mappings: config.mappings.into_iter().collect(),
             selecting_left: config.selecting_left,
             selecting_right: config.selecting_right,
+            symbol_addresses: Default::default(),
         }
     }
 }

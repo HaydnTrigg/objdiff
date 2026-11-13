@@ -365,6 +365,13 @@
       "description": "Display pooled data references in functions as fake relocations."
     },
     {
+      "id": "x86.decodeAfterJumpTable",
+      "type": "boolean",
+      "default": false,
+      "name": "Decode code after jump tables",
+      "description": "Decode the bytes between an inline jump table and the next relocation as instructions instead of showing them as a byte array. Delphi places case arm code there."
+    },
+    {
       "id": "x86.formatter",
       "type": "choice",
       "default": "intel",
@@ -431,7 +438,7 @@
     {
       "id": "x86",
       "name": "x86",
-      "properties": ["x86.formatter"]
+      "properties": ["x86.formatter", "x86.decodeAfterJumpTable"]
     }
   ]
 }

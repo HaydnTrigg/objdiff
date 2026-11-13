@@ -650,6 +650,9 @@ pub struct MappingConfig {
     pub selecting_left: Option<String>,
     /// The left object symbol name that we're selecting a right symbol for
     pub selecting_right: Option<String>,
+    /// Original symbol addresses (see [`crate::config::ProjectConfig::symbol_addresses`]),
+    /// applied to objects with [`crate::obj::Object::apply_symbol_addresses`] after loading
+    pub symbol_addresses: BTreeMap<String, u64>,
 }
 
 fn apply_symbol_mappings(
@@ -975,47 +978,14 @@ pub(crate) fn address_eq(left: ResolvedRelocation, right: ResolvedRelocation) ->
     }
 }
 
-/// Original address of a named symbol of the project, from the file named by the
-/// `OBJDIFF_SYMBOL_ADDRESSES` environment variable (one `<name> <hex address>` per
-/// line). Names that appear with more than one address are left out.
-#[cfg(feature = "std")]
-pub(crate) fn project_symbol_address(name: &str) -> Option<i64> {
-    use std::{collections::HashMap, sync::OnceLock};
-    static MAP: OnceLock<HashMap<String, Option<i64>>> = OnceLock::new();
-    MAP.get_or_init(|| {
-        let mut map = HashMap::<String, Option<i64>>::new();
-        let Some(path) = std::env::var_os("OBJDIFF_SYMBOL_ADDRESSES") else { return map };
-        let Ok(text) = std::fs::read_to_string(path) else { return map };
-        for line in text.lines() {
-            let Some((name, addr)) = line.rsplit_once(' ') else { continue };
-            let Ok(addr) = i64::from_str_radix(addr.trim_start_matches("0x"), 16) else { continue };
-            map.entry(name.to_string())
-                .and_modify(|a| {
-                    if *a != Some(addr) {
-                        *a = None
-                    }
-                })
-                .or_insert(Some(addr));
+/// Both relocations point at the same original address: both target symbols have a virtual
+/// address (from the object or the project's `symbol_addresses`) and those plus the addends agree.
+/// Catches `_Name+off` in one object against `__data_start+N` or a neighbouring `_Other+off`.
+pub(crate) fn virtual_address_eq(left: ResolvedRelocation, right: ResolvedRelocation) -> bool {
+    match (left.symbol.virtual_address, right.symbol.virtual_address) {
+        (Some(l), Some(r)) => {
+            l as i64 + left.relocation.addend == r as i64 + right.relocation.addend
         }
-        map
-    })
-    .get(name)
-    .copied()
-    .flatten()
-}
-
-#[cfg(not(feature = "std"))]
-pub(crate) fn project_symbol_address(_name: &str) -> Option<i64> { None }
-
-/// Both relocations point at the same original address, judged by the project's symbol
-/// addresses (`_Name+off` in one object and `__delink_ida_data_start+N` or the previous
-/// variable's `_Other+off` in the other).
-pub(crate) fn project_address_eq(left: ResolvedRelocation, right: ResolvedRelocation) -> bool {
-    match (
-        project_symbol_address(&left.symbol.name),
-        project_symbol_address(&right.symbol.name),
-    ) {
-        (Some(l), Some(r)) => l + left.relocation.addend == r + right.relocation.addend,
         _ => false,
     }
 }

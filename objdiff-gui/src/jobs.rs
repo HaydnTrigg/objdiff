@@ -118,6 +118,7 @@ pub fn create_objdiff_config(state: &AppState) -> objdiff::ObjDiffConfig {
                 .unwrap_or_default(),
             selecting_left: state.selecting_left.clone(),
             selecting_right: state.selecting_right.clone(),
+            symbol_addresses: state.effective_symbol_addresses(),
         },
     }
 }

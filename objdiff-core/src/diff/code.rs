@@ -310,8 +310,10 @@ fn reloc_eq(
     if relax_reloc_diffs {
         return true;
     }
-    if diff_config.function_reloc_diffs == FunctionRelocDiffs::NameAddress
-        && super::project_address_eq(left_reloc, right_reloc)
+    if matches!(
+        diff_config.function_reloc_diffs,
+        FunctionRelocDiffs::NameAddress | FunctionRelocDiffs::All
+    ) && super::virtual_address_eq(left_reloc, right_reloc)
     {
         return true;
     }

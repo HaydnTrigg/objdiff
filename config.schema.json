@@ -112,6 +112,13 @@
         "$ref": "#/$defs/progress_category"
       }
     },
+    "symbol_addresses": {
+      "type": "object",
+      "description": "Original addresses of symbols by name, as hex strings (e.g. \"0x401000\"). For targets taken from a linked executable: two relocations whose target symbols have the same original address (plus addend) compare equal even when the names differ.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "options": {
       "type": "object",
       "description": "Diff configuration options that should be applied automatically when the project is loaded.",
@@ -172,6 +179,13 @@
         "symbol_mappings": {
           "type": "object",
           "description": "Manual symbol mappings from target to base.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "symbol_addresses": {
+          "type": "object",
+          "description": "Symbol addresses for this unit, added to (and overriding) the project's symbol_addresses.",
           "additionalProperties": {
             "type": "string"
           }

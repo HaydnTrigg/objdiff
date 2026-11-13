@@ -19,7 +19,7 @@ use objdiff_core::{
     config::{
         ProjectConfig, ProjectConfigInfo, ProjectObject, ScratchConfig, apply_project_options,
         build_globset, default_ignore_patterns, default_watch_patterns,
-        path::platform_path_serde_option, save_project_config,
+        path::platform_path_serde_option, resolve_symbol_addresses, save_project_config,
     },
     diff::DiffObjConfig,
     jobs::{Job, JobQueue, JobResult},
@@ -353,6 +353,20 @@ impl AppState {
             }
         }
         config
+    }
+
+    pub fn effective_symbol_addresses(&self) -> BTreeMap<String, u64> {
+        let Some(project) = self.current_project_config.as_ref() else {
+            return BTreeMap::new();
+        };
+        let unit =
+            self.config.selected_obj.as_ref().and_then(|selected| {
+                project.units().iter().find(|unit| unit.name() == selected.name)
+            });
+        resolve_symbol_addresses(Some(project), unit).unwrap_or_else(|e| {
+            log::error!("Failed to read symbol_addresses: {e:#}");
+            BTreeMap::new()
+        })
     }
 
     pub fn set_selecting_left(&mut self, right: &str) {

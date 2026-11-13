@@ -118,7 +118,10 @@ fn run_build(
             )?;
             step_idx += 1;
             match read::read(target_path.as_ref(), &config.diff_obj_config, DiffSide::Target) {
-                Ok(obj) => Some(obj),
+                Ok(mut obj) => {
+                    obj.apply_symbol_addresses(&config.mapping_config.symbol_addresses);
+                    Some(obj)
+                }
                 Err(e) => {
                     first_status = BuildStatus {
                         success: false,
@@ -142,7 +145,10 @@ fn run_build(
             update_status(context, format!("Loading base {base_path}"), step_idx, total, &cancel)?;
             step_idx += 1;
             match read::read(base_path.as_ref(), &config.diff_obj_config, DiffSide::Base) {
-                Ok(obj) => Some(obj),
+                Ok(mut obj) => {
+                    obj.apply_symbol_addresses(&config.mapping_config.symbol_addresses);
+                    Some(obj)
+                }
                 Err(e) => {
                     second_status = BuildStatus {
                         success: false,

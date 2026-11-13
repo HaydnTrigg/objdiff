@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Mutex};
 use anyhow::{Result, anyhow};
 use objdiff_core::{
     build::BuildConfig,
-    diff::{ConfigPropertyId, DiffObjConfig},
+    diff::{ConfigPropertyId, DiffObjConfig, MappingConfig},
 };
 use typed_path::Utf8UnixPathBuf;
 
@@ -32,8 +32,8 @@ pub struct DiffInputs {
     pub target: PathBuf,
     pub base: PathBuf,
     pub config: DiffObjConfig,
-    /// Manual symbol mappings (target name -> base name) from the unit config.
-    pub mappings: BTreeMap<String, String>,
+    /// Manual symbol mappings and symbol addresses from the project / unit config.
+    pub mapping_config: MappingConfig,
 }
 
 impl AppState {
@@ -80,17 +80,20 @@ impl AppState {
         if let Some(project) = inner.project.as_ref() {
             project.apply_options(unit, &mut config)?;
         }
-        let mappings = match (inner.project.as_ref(), unit) {
-            (Some(project), Some(unit)) => project.symbol_mappings(unit)?,
-            _ => BTreeMap::new(),
-        };
+        let mut mapping_config = MappingConfig::default();
+        if let Some(project) = inner.project.as_ref() {
+            if let Some(unit) = unit {
+                mapping_config.mappings = project.symbol_mappings(unit)?;
+            }
+            mapping_config.symbol_addresses = project.symbol_addresses(unit)?;
+        }
         for (key, value) in overrides {
             let id = parse_property(key)?;
             config
                 .set_property_value_str(id, value)
                 .map_err(|_| anyhow!("Invalid value `{value}` for config property `{key}`"))?;
         }
-        Ok(DiffInputs { target, base, config, mappings })
+        Ok(DiffInputs { target, base, config, mapping_config })
     }
 
     /// Add/remove/clear a unit's manual symbol mappings and persist them.

@@ -106,21 +106,6 @@ impl ArchX86 {
     }
 }
 
-/// Bytes between a jump table's last entry and the next relocation are shown as a `.byte` array
-/// (the "indirect table" of MSVC code). Delphi puts the code of the case arms right behind the
-/// table, so with OBJDIFF_DECODE_AFTER_TABLE set that code is decoded as instructions instead (a
-/// one-byte difference then reads as the instruction that differs, but the match percentages
-/// are lower because they count instructions, not bytes).
-#[cfg(feature = "std")]
-fn indirect_arrays_enabled() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("OBJDIFF_DECODE_AFTER_TABLE").is_none())
-}
-
-#[cfg(not(feature = "std"))]
-fn indirect_arrays_enabled() -> bool { true }
-
 impl Arch for ArchX86 {
     fn scan_instructions_internal(
         &self,
@@ -128,7 +113,7 @@ impl Arch for ArchX86 {
         code: &[u8],
         _section_index: usize,
         relocations: &[Relocation],
-        _diff_config: &DiffObjConfig,
+        diff_config: &DiffObjConfig,
     ) -> Result<Vec<InstructionRef>> {
         let mut out = Vec::with_capacity(code.len() / 2);
         let mut decoder = self.decoder(code, address);
@@ -173,7 +158,7 @@ impl Arch for ArchX86 {
                                 .unwrap_or(max_size)
                                 .min(max_size);
 
-                            if indirect_array_size > 0 && indirect_arrays_enabled() {
+                            if indirect_array_size > 0 && !diff_config.x86_decode_after_jump_table {
                                 for i in 0..indirect_array_size {
                                     out.push(InstructionRef {
                                         address: indirect_array_address + i as u64,

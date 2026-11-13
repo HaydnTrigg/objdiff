@@ -165,8 +165,12 @@ impl ObjdiffServer {
             .map_err(err)?;
         let symbol = args.symbol;
         let out = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-            let result =
-                diff::run_diff(&inputs.target, &inputs.base, &inputs.config, &inputs.mappings)?;
+            let result = diff::run_diff(
+                &inputs.target,
+                &inputs.base,
+                &inputs.config,
+                &inputs.mapping_config,
+            )?;
             diff::function_diff(&result, &symbol)
         })
         .await
@@ -193,8 +197,12 @@ impl ObjdiffServer {
         let only = args.only_mismatches;
         let limit = args.limit.unwrap_or(200);
         let out = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-            let result =
-                diff::run_diff(&inputs.target, &inputs.base, &inputs.config, &inputs.mappings)?;
+            let result = diff::run_diff(
+                &inputs.target,
+                &inputs.base,
+                &inputs.config,
+                &inputs.mapping_config,
+            )?;
             Ok(diff::overview(&result, only, limit))
         })
         .await

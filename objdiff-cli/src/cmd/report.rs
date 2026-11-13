@@ -1,4 +1,9 @@
-use std::{collections::HashSet, fs::File, io::Read, time::Instant};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fs::File,
+    io::Read,
+    time::Instant,
+};
 
 use anyhow::{Context, Result, bail};
 use argp::FromArgs;
@@ -7,7 +12,10 @@ use objdiff_core::{
         ChangeItem, ChangeItemInfo, ChangeUnit, Changes, ChangesInput, Measures, REPORT_VERSION,
         Report, ReportCategory, ReportItem, ReportItemMetadata, ReportUnit, ReportUnitMetadata,
     },
-    config::{ProjectObject, ProjectOptions, apply_project_options, path::platform_path},
+    config::{
+        ProjectObject, ProjectOptions, apply_project_options, path::platform_path,
+        resolve_symbol_addresses,
+    },
     diff,
     obj::{self, SectionKind, SymbolFlag, SymbolKind},
 };
@@ -138,8 +146,14 @@ fn generate(args: GenerateArgs) -> Result<()> {
                 project_units.get(*unit_idx).and_then(ProjectObject::options),
                 &args.config,
             )?;
-            if let Some(unit) = report_object(object, &diff_config, Some(&mut existing_functions))?
-            {
+            let symbol_addresses =
+                resolve_symbol_addresses(Some(&project), project_units.get(*unit_idx))?;
+            if let Some(unit) = report_object(
+                object,
+                &diff_config,
+                &symbol_addresses,
+                Some(&mut existing_functions),
+            )? {
                 units.push(unit);
             }
         }
@@ -153,7 +167,9 @@ fn generate(args: GenerateArgs) -> Result<()> {
                     project_units.get(*unit_idx).and_then(ProjectObject::options),
                     &args.config,
                 )?;
-                report_object(object, &diff_config, None)
+                let symbol_addresses =
+                    resolve_symbol_addresses(Some(&project), project_units.get(*unit_idx))?;
+                report_object(object, &diff_config, &symbol_addresses, None)
             })
             .collect::<Result<Vec<Option<ReportUnit>>>>()?;
         units = vec.into_iter().flatten().collect();
@@ -197,6 +213,7 @@ fn build_unit_diff_config(
 fn report_object(
     object: &ObjectConfig,
     diff_config: &diff::DiffObjConfig,
+    symbol_addresses: &BTreeMap<String, u64>,
     mut existing_functions: Option<&mut HashSet<String>>,
 ) -> Result<Option<ReportUnit>> {
     match (&object.target_path, &object.base_path) {
@@ -214,8 +231,9 @@ fn report_object(
         mappings: object.symbol_mappings.clone(),
         selecting_left: None,
         selecting_right: None,
+        symbol_addresses: symbol_addresses.clone(),
     };
-    let target = object
+    let mut target = object
         .target_path
         .as_ref()
         .map(|p| {
@@ -223,7 +241,7 @@ fn report_object(
                 .with_context(|| format!("Failed to open {p}"))
         })
         .transpose()?;
-    let base = object
+    let mut base = object
         .base_path
         .as_ref()
         .map(|p| {
@@ -231,6 +249,9 @@ fn report_object(
                 .with_context(|| format!("Failed to open {p}"))
         })
         .transpose()?;
+    for obj in target.iter_mut().chain(base.iter_mut()) {
+        obj.apply_symbol_addresses(symbol_addresses);
+    }
     let result =
         diff::diff_objs(target.as_ref(), base.as_ref(), None, diff_config, &mapping_config)?;
 

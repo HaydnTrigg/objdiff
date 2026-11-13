@@ -314,6 +314,18 @@ impl Default for Object {
 }
 
 impl Object {
+    /// Give symbols without a virtual address the one listed for their name.
+    pub fn apply_symbol_addresses(&mut self, addresses: &BTreeMap<String, u64>) {
+        if addresses.is_empty() {
+            return;
+        }
+        for symbol in &mut self.symbols {
+            if symbol.virtual_address.is_none() {
+                symbol.virtual_address = addresses.get(&symbol.name).copied();
+            }
+        }
+    }
+
     pub fn resolve_instruction_ref(
         &self,
         symbol_index: usize,

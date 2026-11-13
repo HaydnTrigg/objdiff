@@ -3,7 +3,7 @@
 //! These are UI-free and synchronous; the MCP server layer wraps them in
 //! `spawn_blocking` and turns the results into tool responses.
 
-use std::{collections::BTreeMap, fmt::Write as _, path::Path};
+use std::{fmt::Write as _, path::Path};
 
 use anyhow::{Context, Result};
 use objdiff_core::{
@@ -20,15 +20,15 @@ pub fn run_diff(
     target: &Path,
     base: &Path,
     config: &DiffObjConfig,
-    mappings: &BTreeMap<String, String>,
+    mapping_config: &MappingConfig,
 ) -> Result<DiffResult> {
-    let target_obj = read::read(target, config, DiffSide::Target)
+    let mut target_obj = read::read(target, config, DiffSide::Target)
         .with_context(|| format!("Failed to read target object {}", target.display()))?;
-    let base_obj = read::read(base, config, DiffSide::Base)
+    let mut base_obj = read::read(base, config, DiffSide::Base)
         .with_context(|| format!("Failed to read base object {}", base.display()))?;
-    let mapping_config =
-        MappingConfig { mappings: mappings.clone(), selecting_left: None, selecting_right: None };
-    let result = diff_objs(Some(&target_obj), Some(&base_obj), None, config, &mapping_config)
+    target_obj.apply_symbol_addresses(&mapping_config.symbol_addresses);
+    base_obj.apply_symbol_addresses(&mapping_config.symbol_addresses);
+    let result = diff_objs(Some(&target_obj), Some(&base_obj), None, config, mapping_config)
         .context("Failed to diff objects")?;
     DiffResult::new(
         result.left.as_ref().map(|d| (&target_obj, d)),

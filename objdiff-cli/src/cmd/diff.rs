@@ -30,6 +30,7 @@ use objdiff_core::{
         ProjectConfig, ProjectObject, ProjectObjectMetadata, ProjectOptions, apply_project_options,
         build_globset,
         path::{check_path_buf, platform_path, platform_path_serde_option},
+        resolve_symbol_addresses,
     },
     diff::{self, DiffObjConfig, DiffSide, MappingConfig, ObjectDiff},
     jobs::{
@@ -81,12 +82,12 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> Result<()> {
-    let (target_path, base_path, project_config, unit_options, symbol_mappings) =
+    let (target_path, base_path, project_config, unit_options, mapping_config) =
         match (&args.target, &args.base, &args.project, &args.unit) {
             (Some(_), Some(_), None, None)
             | (Some(_), None, None, None)
             | (None, Some(_), None, None) => {
-                (args.target.clone(), args.base.clone(), None, None, BTreeMap::new())
+                (args.target.clone(), args.base.clone(), None, None, MappingConfig::default())
             }
             (None, None, p, u) => {
                 let project = match p {
@@ -165,10 +166,16 @@ pub fn run(args: Args) -> Result<()> {
                     bail!("Must specify one of: symbol, project and unit, target and base objects")
                 };
                 let unit_options = units.get(unit_idx).and_then(|u| u.options().cloned());
+                let symbol_addresses =
+                    resolve_symbol_addresses(Some(&project_config), units.get(unit_idx))?;
                 let target_path = object.target_path.clone();
                 let base_path = object.base_path.clone();
-                let symbol_mappings = object.symbol_mappings.clone();
-                (target_path, base_path, Some(project_config), unit_options, symbol_mappings)
+                let mapping_config = MappingConfig {
+                    mappings: object.symbol_mappings.clone(),
+                    symbol_addresses,
+                    ..Default::default()
+                };
+                (target_path, base_path, Some(project_config), unit_options, mapping_config)
             }
             _ => bail!("Either target and base or project and unit must be specified"),
         };
@@ -181,10 +188,10 @@ pub fn run(args: Args) -> Result<()> {
             base_path.as_deref(),
             project_config.as_ref(),
             unit_options,
-            &symbol_mappings,
+            mapping_config,
         )
     } else {
-        run_interactive(args, target_path, base_path, project_config, unit_options, symbol_mappings)
+        run_interactive(args, target_path, base_path, project_config, unit_options, mapping_config)
     }
 }
 
@@ -195,23 +202,25 @@ fn run_oneshot(
     base_path: Option<&Utf8PlatformPath>,
     project_config: Option<&ProjectConfig>,
     unit_options: Option<ProjectOptions>,
-    symbol_mappings: &BTreeMap<String, String>,
+    mapping_config: MappingConfig,
 ) -> Result<()> {
     let output_format = OutputFormat::from_option(args.format.as_deref())?;
-    let (diff_config, mapping_config) =
-        build_config_from_args(args, project_config, unit_options.as_ref(), symbol_mappings)?;
-    let target = target_path
+    let diff_config = build_config_from_args(args, project_config, unit_options.as_ref())?;
+    let mut target = target_path
         .map(|p| {
             obj::read::read(p.as_ref(), &diff_config, DiffSide::Target)
                 .with_context(|| format!("Loading {p}"))
         })
         .transpose()?;
-    let base = base_path
+    let mut base = base_path
         .map(|p| {
             obj::read::read(p.as_ref(), &diff_config, DiffSide::Base)
                 .with_context(|| format!("Loading {p}"))
         })
         .transpose()?;
+    for obj in target.iter_mut().chain(base.iter_mut()) {
+        obj.apply_symbol_addresses(&mapping_config.symbol_addresses);
+    }
     let result =
         diff::diff_objs(target.as_ref(), base.as_ref(), None, &diff_config, &mapping_config)?;
     let left = target.as_ref().zip(result.left.as_ref());
@@ -225,8 +234,7 @@ fn build_config_from_args(
     args: &Args,
     project_config: Option<&ProjectConfig>,
     unit_options: Option<&ProjectOptions>,
-    symbol_mappings: &BTreeMap<String, String>,
-) -> Result<(DiffObjConfig, MappingConfig)> {
+) -> Result<DiffObjConfig> {
     let mut diff_config = DiffObjConfig::default();
     if let Some(options) = project_config.and_then(|config| config.options.as_ref()) {
         apply_project_options(&mut diff_config, options)?;
@@ -235,11 +243,7 @@ fn build_config_from_args(
         apply_project_options(&mut diff_config, options)?;
     }
     apply_config_args(&mut diff_config, &args.config)?;
-    Ok((diff_config, MappingConfig {
-        mappings: symbol_mappings.clone(),
-        selecting_left: None,
-        selecting_right: None,
-    }))
+    Ok(diff_config)
 }
 
 pub struct AppState {
@@ -382,17 +386,13 @@ fn run_interactive(
     base_path: Option<Utf8PlatformPathBuf>,
     project_config: Option<ProjectConfig>,
     unit_options: Option<ProjectOptions>,
-    symbol_mappings: BTreeMap<String, String>,
+    mapping_config: MappingConfig,
 ) -> Result<()> {
     let Some(symbol_name) = &args.symbol else { bail!("Interactive mode requires a symbol name") };
     let time_format = time::format_description::parse_borrowed::<2>("[hour]:[minute]:[second]")
         .context("Failed to parse time format")?;
-    let (diff_obj_config, mapping_config) = build_config_from_args(
-        &args,
-        project_config.as_ref(),
-        unit_options.as_ref(),
-        &symbol_mappings,
-    )?;
+    let diff_obj_config =
+        build_config_from_args(&args, project_config.as_ref(), unit_options.as_ref())?;
     let mut state = AppState {
         jobs: Default::default(),
         waker: Default::default(),

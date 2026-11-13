@@ -8,7 +8,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use objdiff_core::{
     build::{BuildConfig, BuildStatus},
     config::{
-        ProjectConfig, ProjectConfigInfo, ProjectObject, apply_project_options, save_project_config,
+        ProjectConfig, ProjectConfigInfo, ProjectObject, apply_project_options,
+        resolve_symbol_addresses, save_project_config,
     },
     diff::DiffObjConfig,
 };
@@ -69,6 +70,12 @@ impl LoadedProject {
     /// A unit's manual symbol mappings (target name -> base name), if any.
     pub fn symbol_mappings(&self, unit: &str) -> Result<BTreeMap<String, String>> {
         Ok(self.object(unit)?.symbol_mappings.clone().unwrap_or_default())
+    }
+
+    /// Original symbol addresses for a unit (project-level plus the unit's own).
+    pub fn symbol_addresses(&self, unit: Option<&str>) -> Result<BTreeMap<String, u64>> {
+        let object = unit.map(|u| self.object(u)).transpose()?;
+        resolve_symbol_addresses(Some(&self.config), object)
     }
 
     /// Add, remove, or clear a unit's manual symbol mappings, persisting the

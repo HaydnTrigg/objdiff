@@ -46,6 +46,12 @@ pub struct ProjectConfig {
     pub units: Option<Vec<ProjectObject>>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub progress_categories: Option<Vec<ProjectProgressCategory>>,
+    /// Original addresses of symbols by name (hex, e.g. `"0x401000"`), for projects whose target
+    /// objects come from a linked executable. Fills in [`crate::obj::Symbol::virtual_address`] for
+    /// symbols that have none, so relocations to differently named symbols at the same original
+    /// address compare equal.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub symbol_addresses: Option<BTreeMap<String, String>>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub options: Option<ProjectOptions>,
 }
@@ -119,6 +125,9 @@ pub struct ProjectObject {
     pub metadata: Option<ProjectObjectMetadata>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub symbol_mappings: Option<BTreeMap<String, String>>,
+    /// Symbol addresses for this unit, added to (and overriding) the project's `symbol_addresses`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub symbol_addresses: Option<BTreeMap<String, String>>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub options: Option<ProjectOptions>,
 }
@@ -325,6 +334,28 @@ pub fn build_globset(vec: &[Glob]) -> Result<GlobSet, globset::Error> {
         builder.add(glob.clone());
     }
     builder.build()
+}
+
+/// The symbol addresses that apply to a unit: the project's `symbol_addresses` with the unit's
+/// own entries on top.
+pub fn resolve_symbol_addresses(
+    project: Option<&ProjectConfig>,
+    unit: Option<&ProjectObject>,
+) -> Result<BTreeMap<String, u64>> {
+    let mut out = BTreeMap::new();
+    let maps = [
+        project.and_then(|p| p.symbol_addresses.as_ref()),
+        unit.and_then(|u| u.symbol_addresses.as_ref()),
+    ];
+    for map in maps.into_iter().flatten() {
+        for (name, value) in map {
+            let digits = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X"));
+            let address = u64::from_str_radix(digits.unwrap_or(value), 16)
+                .map_err(|_| anyhow!("Invalid address for symbol {name}: {value}"))?;
+            out.insert(name.clone(), address);
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(feature = "any-arch")]
