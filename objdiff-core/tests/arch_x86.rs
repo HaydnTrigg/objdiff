@@ -122,3 +122,21 @@ fn read_x86_indirect_table() {
     let output = common::display_diff(&obj, &diff, symbol_idx, &diff_config);
     insta::assert_snapshot!(output);
 }
+
+#[test]
+#[cfg(feature = "x86")]
+fn read_delphi_omf() {
+    // Delphi 6 `dcc32 -JP` output for data/x86/delphi_probe.pas
+    let diff_config = diff::DiffObjConfig::default();
+    let obj = obj::read::parse(
+        include_object!("data/x86/delphi_probe.obj"),
+        &diff_config,
+        diff::DiffSide::Base,
+    )
+    .unwrap();
+    insta::assert_debug_snapshot!(obj);
+    let symbol_idx = obj.symbols.iter().position(|s| s.name == "@Describe$qqrp6TProbe").unwrap();
+    let diff = diff::code::no_diff_code(&obj, symbol_idx, &diff_config).unwrap();
+    let output = common::display_diff(&obj, &diff, symbol_idx, &diff_config);
+    insta::assert_snapshot!(output);
+}

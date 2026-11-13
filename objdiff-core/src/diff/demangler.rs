@@ -3,6 +3,9 @@ use alloc::string::String;
 use crate::diff::Demangler;
 
 #[cfg(feature = "demangler")]
+mod borland;
+
+#[cfg(feature = "demangler")]
 impl Demangler {
     pub fn demangle(&self, name: &str) -> Option<String> {
         match self {
@@ -11,10 +14,13 @@ impl Demangler {
             Demangler::Msvc => Self::demangle_msvc(name),
             Demangler::Itanium => Self::demangle_itanium(name),
             Demangler::GnuLegacy => Self::demangle_gnu_legacy(name),
+            Demangler::Borland => borland::demangle(name),
             Demangler::Auto => {
                 // Try to guess
                 if name.starts_with('?') {
                     Self::demangle_msvc(name)
+                } else if borland::is_borland_name(name) {
+                    borland::demangle(name)
                 } else {
                     Self::demangle_codewarrior(name)
                         .or_else(|| Self::demangle_gnu_legacy(name))

@@ -58,6 +58,11 @@
           "value": "gnu_legacy",
           "name": "GNU g++ (Legacy)",
           "description": "Use the old GNU mangling ABI. Used up to g++ 2.9.x"
+        },
+        {
+          "value": "borland",
+          "name": "Borland (Delphi / C++Builder)",
+          "description": "Borland mangling as used by Delphi and C++Builder, e.g. @Unit@TClass@Method$qqri"
         }
       ]
     },

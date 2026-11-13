@@ -42,7 +42,7 @@ fn map_section_kind(section: &object::Section) -> SectionKind {
 
 /// Check if a symbol's name is partially compiler-generated, and if so normalize it for pairing.
 /// e.g. symbol$1234 and symbol$2345 will both be replaced with symbol$0000 internally.
-fn get_normalized_symbol_name(name: &str) -> Option<String> {
+pub(crate) fn get_normalized_symbol_name(name: &str) -> Option<String> {
     const DUMMY_UNIQUE_ID: &str = "0000";
     const DUMMY_UNIQUE_MSVC_ID: &str = "00000000";
     if let Some((prefix, suffix)) = name.split_once("@class$")
@@ -318,7 +318,11 @@ fn is_local_label(symbol: &Symbol) -> bool {
         && LABEL_PREFIXES.iter().any(|p| symbol.name.starts_with(p))
 }
 
-fn infer_symbol_sizes(arch: &dyn Arch, symbols: &mut [Symbol], sections: &[Section]) -> Result<()> {
+pub(crate) fn infer_symbol_sizes(
+    arch: &dyn Arch,
+    symbols: &mut [Symbol],
+    sections: &[Section],
+) -> Result<()> {
     // Above, we've sorted the symbols by section and then by address, and also mapped section relocations.
 
     // Set symbol sizes based on the next symbol's address
@@ -1117,8 +1121,12 @@ pub fn read(
 }
 
 pub fn parse(data: &[u8], config: &DiffObjConfig, diff_side: DiffSide) -> Result<Object> {
+    #[cfg(feature = "x86")]
+    if super::omf::is_omf(data) {
+        return parse_omf(data, config);
+    }
     let obj_file = object::File::parse(data)?;
-    let mut arch = new_arch(&obj_file, diff_side)?;
+    let arch = new_arch(&obj_file, diff_side)?;
     let split_meta = parse_split_meta(&obj_file)?;
     let comment_syms = parse_mw_comment_syms(&obj_file)?;
     let (mut sections, section_indices) =
@@ -1135,14 +1143,52 @@ pub fn parse(data: &[u8], config: &DiffObjConfig, diff_side: DiffSide) -> Result
     // Infer symbol sizes for 0-size symbols (must be done after map_relocations is called)
     infer_symbol_sizes(arch.as_ref(), &mut symbols, &sections)?;
     parse_line_info(&obj_file, &mut sections, &section_indices, data)?;
+    finish_object(
+        arch,
+        obj_file.endianness(),
+        sections,
+        symbols,
+        &symbol_indices,
+        split_meta,
+        config,
+    )
+}
+
+/// Borland / Delphi OMF object (see [`super::omf`]).
+#[cfg(feature = "x86")]
+fn parse_omf(data: &[u8], config: &DiffObjConfig) -> Result<Object> {
+    let (arch, sections, mut symbols) = super::omf::parse(data, config)?;
+    let arch: Box<dyn Arch> = Box::new(arch);
+    infer_symbol_sizes(arch.as_ref(), &mut symbols, &sections)?;
+    let symbol_indices = (0..symbols.len()).collect::<Vec<_>>();
+    finish_object(
+        arch,
+        object::Endianness::Little,
+        sections,
+        symbols,
+        &symbol_indices,
+        None,
+        config,
+    )
+}
+
+fn finish_object(
+    mut arch: Box<dyn Arch>,
+    endianness: object::Endianness,
+    mut sections: Vec<Section>,
+    mut symbols: Vec<Symbol>,
+    symbol_indices: &[usize],
+    split_meta: Option<SplitMeta>,
+    config: &DiffObjConfig,
+) -> Result<Object> {
     if config.combine_data_sections || config.combine_text_sections {
         combine_sections(&mut sections, &mut symbols, config)?;
     }
     add_section_symbols(&sections, &mut symbols);
-    arch.post_init(&sections, &symbols, &symbol_indices);
+    arch.post_init(&sections, &symbols, symbol_indices);
     let mut obj = Object {
         arch,
-        endianness: obj_file.endianness(),
+        endianness,
         symbols,
         sections,
         split_meta,
@@ -1166,6 +1212,14 @@ pub fn has_function(obj_path: &std::path::Path, symbol_name: &str) -> Result<boo
         let file = std::fs::File::open(obj_path)?;
         unsafe { memmap2::Mmap::map(&file) }?
     };
+    #[cfg(feature = "x86")]
+    if super::omf::is_omf(&data) {
+        let config = DiffObjConfig::default();
+        let (_, _, symbols) = super::omf::parse(&data, &config)?;
+        return Ok(symbols.iter().any(|s| {
+            s.name == symbol_name && s.section.is_some() && s.kind == SymbolKind::Function
+        }));
+    }
     Ok(object::File::parse(&*data)?
         .symbol_by_name(symbol_name)
         .filter(|o| o.kind() == object::SymbolKind::Text)

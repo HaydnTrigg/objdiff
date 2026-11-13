@@ -2,6 +2,8 @@ pub mod comment;
 #[cfg(feature = "dwarf")]
 mod dwarf2;
 mod mdebug;
+#[cfg(feature = "x86")]
+pub mod omf;
 pub mod read;
 pub mod split_meta;
 

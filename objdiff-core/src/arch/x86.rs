@@ -36,6 +36,11 @@ impl ArchX86 {
         Ok(Self { arch, endianness: object.endianness() })
     }
 
+    /// 32-bit x86, for objects not read through the `object` crate (OMF).
+    pub fn new_i386() -> Self {
+        Self { arch: Architecture::X86, endianness: object::Endianness::Little }
+    }
+
     fn decoder<'a>(&self, code: &'a [u8], address: u64) -> Decoder<'a> {
         Decoder::with_ip(
             match self.arch {
