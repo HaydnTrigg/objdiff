@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Mutex};
 use anyhow::{Result, anyhow};
 use objdiff_core::{
     build::BuildConfig,
-    diff::{ConfigPropertyId, DiffObjConfig, MappingConfig},
+    diff::{DiffObjConfig, MappingConfig},
 };
 use typed_path::Utf8UnixPathBuf;
 
@@ -41,12 +41,8 @@ impl AppState {
 
     /// Apply a single config override onto the persistent baseline config.
     pub fn set_config(&self, key: &str, value: &str) -> Result<()> {
-        let id = parse_property(key)?;
         let mut inner = self.inner.lock().unwrap();
-        inner
-            .config
-            .set_property_value_str(id, value)
-            .map_err(|_| anyhow!("Invalid value `{value}` for config property `{key}`"))
+        inner.config.set_option_str(key, value)
     }
 
     pub fn open_project(&self, dir: &str) -> Result<String> {
@@ -88,10 +84,7 @@ impl AppState {
             mapping_config.symbol_addresses = project.symbol_addresses(unit)?;
         }
         for (key, value) in overrides {
-            let id = parse_property(key)?;
-            config
-                .set_property_value_str(id, value)
-                .map_err(|_| anyhow!("Invalid value `{value}` for config property `{key}`"))?;
+            config.set_option_str(key, value)?;
         }
         Ok(DiffInputs { target, base, config, mapping_config })
     }
@@ -124,10 +117,6 @@ impl AppState {
         let project = inner.project.as_ref().ok_or_else(no_project)?;
         project.build_invocation(unit, target)
     }
-}
-
-fn parse_property(key: &str) -> Result<ConfigPropertyId> {
-    key.parse::<ConfigPropertyId>().map_err(|_| anyhow!("Unknown config property `{key}`"))
 }
 
 fn no_project() -> anyhow::Error { anyhow!("No project loaded; call open_project first") }

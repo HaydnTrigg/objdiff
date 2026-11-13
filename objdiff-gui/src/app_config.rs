@@ -5,8 +5,8 @@ use globset::Glob;
 use objdiff_core::{
     config::ScratchConfig,
     diff::{
-        ArmArchVersion, ArmR9Usage, DiffObjConfig, FunctionRelocDiffs, MipsAbi, MipsInstrCategory,
-        ShowSymbolSizes, X86Formatter,
+        ArmArchVersion, ArmR9Usage, DiffObjConfig, MipsAbi, MipsInstrCategory, ShowSymbolSizes,
+        X86Formatter,
     },
 };
 use typed_path::{Utf8PlatformPathBuf, Utf8UnixPathBuf};
@@ -268,11 +268,9 @@ impl Default for DiffObjConfigV1 {
 impl DiffObjConfigV1 {
     fn into_config(self) -> DiffObjConfig {
         DiffObjConfig {
-            function_reloc_diffs: if self.relax_reloc_diffs {
-                FunctionRelocDiffs::None
-            } else {
-                FunctionRelocDiffs::default()
-            },
+            function_reloc_diffs_name_address: !self.relax_reloc_diffs,
+            function_reloc_diffs_data_value: false,
+            function_reloc_diffs_logical: false,
             space_between_args: self.space_between_args,
             show_symbol_sizes: self.show_symbol_sizes,
             combine_data_sections: self.combine_data_sections,

@@ -363,40 +363,17 @@ pub fn apply_project_options(
     diff_config: &mut crate::diff::DiffObjConfig,
     options: &ProjectOptions,
 ) -> Result<()> {
-    use core::str::FromStr;
-
-    use crate::diff::{ConfigEnum, ConfigPropertyId, ConfigPropertyKind};
-
     let mut result = Ok(());
     for (key, value) in options.iter() {
-        let property_id = ConfigPropertyId::from_str(key)
-            .map_err(|()| anyhow!("Invalid configuration property: {key}"))?;
         let value = match value {
             ProjectOptionValue::Bool(value) => Cow::Borrowed(if *value { "true" } else { "false" }),
             ProjectOptionValue::String(value) => Cow::Borrowed(value.as_str()),
         };
-        if diff_config.set_property_value_str(property_id, &value).is_err() {
-            if result.is_err() {
-                // Already returning an error, skip further errors
-                continue;
-            }
-            let mut expected = String::new();
-            match property_id.kind() {
-                ConfigPropertyKind::Boolean => expected.push_str("true, false"),
-                ConfigPropertyKind::Choice(variants) => {
-                    for (idx, variant) in variants.iter().enumerate() {
-                        if idx > 0 {
-                            expected.push_str(", ");
-                        }
-                        expected.push_str(variant.value);
-                    }
-                }
-            }
-            result = Err(anyhow!(
-                "Invalid value for {}. Expected one of: {}",
-                property_id.name(),
-                expected
-            ));
+        if let Err(e) = diff_config.set_option_str(key, &value)
+            && result.is_ok()
+        {
+            // Apply the rest; report the first error
+            result = Err(e);
         }
     }
     result

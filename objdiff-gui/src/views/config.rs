@@ -13,7 +13,7 @@ use objdiff_core::{
     config::{default_ignore_patterns, default_watch_patterns, path::check_path_buf},
     diff::{
         CONFIG_GROUPS, ConfigEnum, ConfigEnumVariantInfo, ConfigPropertyId, ConfigPropertyKind,
-        ConfigPropertyValue,
+        ConfigPropertyValue, option_key_sets,
     },
     jobs::{Job, JobQueue, JobResult, check_update::CheckUpdateResult},
 };
@@ -895,17 +895,19 @@ fn config_property_ui(
 ) -> bool {
     let mut changed = false;
     let is_overridden = state.current_project_config.as_ref().is_some_and(|config| {
-        let key = property_id.name();
+        let sets = |options: &objdiff_core::config::ProjectOptions| {
+            options.keys().any(|key| option_key_sets(key, property_id))
+        };
         if let Some(selected) = state.config.selected_obj.as_ref()
             && let Some(units) = config.units.as_deref()
             && let Some(unit) = units.iter().find(|unit| unit.name() == selected.name)
             && let Some(options) = unit.options()
-            && options.contains_key(key)
+            && sets(options)
         {
             return true;
         }
         if let Some(options) = config.options.as_ref()
-            && options.contains_key(key)
+            && sets(options)
         {
             return true;
         }
@@ -1040,7 +1042,22 @@ pub fn general_config_ui(ui: &mut egui::Ui, state: &mut AppState) {
     let mut changed = false;
     let group = CONFIG_GROUPS.iter().find(|group| group.id == "general").unwrap();
     for property_id in group.properties.iter().cloned() {
-        changed |= config_property_ui(ui, state, property_id);
+        // The relocation checkboxes sit under one heading (they replaced a single choice)
+        if !matches!(
+            property_id,
+            ConfigPropertyId::FunctionRelocDiffsNameAddress
+                | ConfigPropertyId::FunctionRelocDiffsDataValue
+                | ConfigPropertyId::FunctionRelocDiffsLogical
+        ) {
+            changed |= config_property_ui(ui, state, property_id);
+            continue;
+        }
+        if property_id == ConfigPropertyId::FunctionRelocDiffsNameAddress {
+            ui.label("Function relocation diffs");
+        }
+        ui.indent(property_id.as_str(), |ui| {
+            changed |= config_property_ui(ui, state, property_id);
+        });
     }
     if changed {
         state.queue_reload = true;

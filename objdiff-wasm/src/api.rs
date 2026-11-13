@@ -557,12 +557,7 @@ impl GuestDiffConfig for ResourceDiffConfig {
     fn new() -> Self { Self(RefCell::new(diff::DiffObjConfig::default())) }
 
     fn set_property(&self, key: String, value: String) -> Result<(), String> {
-        let id = diff::ConfigPropertyId::from_str(&key)
-            .map_err(|_| format!("Invalid property key {:?}", key))?;
-        self.0
-            .borrow_mut()
-            .set_property_value_str(id, &value)
-            .map_err(|_| format!("Invalid property value {:?}", value))
+        self.0.borrow_mut().set_option_str(&key, &value).map_err(|e| format!("{e:#}"))
     }
 
     fn get_property(&self, key: String) -> Result<String, String> {

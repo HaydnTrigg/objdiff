@@ -6,7 +6,7 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, 
 use objdiff_core::{
     build::BuildStatus,
     diff::{
-        DiffObjConfig, FunctionRelocDiffs, InstructionDiffKind, ObjectDiff, SymbolDiff,
+        DiffObjConfig, InstructionDiffKind, ObjectDiff, SymbolDiff,
         display::{DiffText, DiffTextColor, HighlightKind, display_row},
     },
     obj::Object,
@@ -393,13 +393,18 @@ impl UiView for FunctionDiffUi {
                     }
                     // Cycle through function relocation diff mode
                     KeyCode::Char('x') => {
-                        state.diff_obj_config.function_reloc_diffs =
-                            match state.diff_obj_config.function_reloc_diffs {
-                                FunctionRelocDiffs::None => FunctionRelocDiffs::NameAddress,
-                                FunctionRelocDiffs::NameAddress => FunctionRelocDiffs::DataValue,
-                                FunctionRelocDiffs::DataValue => FunctionRelocDiffs::All,
-                                FunctionRelocDiffs::All => FunctionRelocDiffs::None,
-                            };
+                        let config = &mut state.diff_obj_config;
+                        let (name_address, data_value) = match (
+                            config.function_reloc_diffs_name_address,
+                            config.function_reloc_diffs_data_value,
+                        ) {
+                            (false, false) => (true, false),
+                            (true, false) => (false, true),
+                            (false, true) => (true, true),
+                            (true, true) => (false, false),
+                        };
+                        config.function_reloc_diffs_name_address = name_address;
+                        config.function_reloc_diffs_data_value = data_value;
                         return EventControlFlow::Reload;
                     }
                     // Toggle three-way diff

@@ -3,15 +3,22 @@ use core::cmp::Ordering;
 
 use anyhow::{Context, Result, anyhow, bail};
 use iced_x86::{
-    Decoder, DecoderOptions, DecoratorKind, FormatterOutput, FormatterTextKind, GasFormatter,
-    Instruction, IntelFormatter, MasmFormatter, NasmFormatter, NumberKind, OpKind, Register,
+    Decoder, DecoderOptions, DecoratorKind, FlowControl, FormatterOutput, FormatterTextKind,
+    GasFormatter, Instruction, InstructionInfoFactory, IntelFormatter, MasmFormatter, Mnemonic,
+    NasmFormatter, NumberKind, OpAccess, OpKind, Register,
 };
 use object::{Endian as _, Object as _, ObjectSection as _, elf, pe};
 
 use crate::{
-    arch::{Arch, OPCODE_DATA, RelocationOverride, RelocationOverrideTarget},
+    arch::{
+        Arch, LogicalAbi, LogicalFlow, LogicalFlowKind, LogicalRegister, OPCODE_DATA,
+        RelocationOverride, RelocationOverrideTarget,
+    },
     diff::{DiffObjConfig, X86Formatter, display::InstructionPart},
-    obj::{InstructionRef, Relocation, RelocationFlags, ResolvedInstructionRef, Section, Symbol},
+    obj::{
+        InstructionArg, InstructionArgValue, InstructionRef, Relocation, RelocationFlags,
+        ResolvedInstructionRef, Section, Symbol,
+    },
 };
 
 #[derive(Debug)]
@@ -380,6 +387,134 @@ impl Arch for ArchX86 {
         self.reloc_size(flags).unwrap_or(1)
     }
 
+    fn logical_abi(&self) -> Option<LogicalAbi> {
+        match self.arch {
+            // Register (Delphi), fastcall and thiscall pass arguments in eax / edx / ecx; all
+            // conventions clobber them and return in eax.
+            Architecture::X86 => Some(LogicalAbi {
+                call_registers: &[REG_EAX, REG_ECX, REG_EDX],
+                return_registers: &[REG_EAX],
+                callee_saved: &[REG_EBX, REG_EBP, REG_ESI, REG_EDI],
+            }),
+            Architecture::X86_64 => None,
+        }
+    }
+
+    fn logical_register(&self, arg: &InstructionArg) -> Option<LogicalRegister> {
+        let InstructionArg::Value(InstructionArgValue::Opaque(name)) = arg else { return None };
+        let name = name.strip_prefix('%').unwrap_or(name);
+        let (family, part) = match name.to_ascii_lowercase().as_str() {
+            "eax" => (REG_EAX, PART_32),
+            "ecx" => (REG_ECX, PART_32),
+            "edx" => (REG_EDX, PART_32),
+            "ebx" => (REG_EBX, PART_32),
+            "ebp" => (REG_EBP, PART_32),
+            "esi" => (REG_ESI, PART_32),
+            "edi" => (REG_EDI, PART_32),
+            "ax" => (REG_EAX, PART_16),
+            "cx" => (REG_ECX, PART_16),
+            "dx" => (REG_EDX, PART_16),
+            "bx" => (REG_EBX, PART_16),
+            "bp" => (REG_EBP, PART_16),
+            "si" => (REG_ESI, PART_16),
+            "di" => (REG_EDI, PART_16),
+            "al" => (REG_EAX, PART_LOW8),
+            "cl" => (REG_ECX, PART_LOW8),
+            "dl" => (REG_EDX, PART_LOW8),
+            "bl" => (REG_EBX, PART_LOW8),
+            "ah" => (REG_EAX, PART_HIGH8),
+            "ch" => (REG_ECX, PART_HIGH8),
+            "dh" => (REG_EDX, PART_HIGH8),
+            "bh" => (REG_EBX, PART_HIGH8),
+            _ => return None,
+        };
+        Some(LogicalRegister { family, part })
+    }
+
+    fn logical_flow(
+        &self,
+        resolved: ResolvedInstructionRef,
+        _diff_config: &DiffObjConfig,
+    ) -> Result<LogicalFlow> {
+        let mut flow = LogicalFlow::default();
+        if resolved.ins_ref.opcode == OPCODE_DATA {
+            return Ok(flow);
+        }
+        let mut decoder = self.decoder(resolved.code, resolved.ins_ref.address);
+        let mut instruction = Instruction::default();
+        decoder.decode_out(&mut instruction);
+        let mut factory = InstructionInfoFactory::new();
+        let info = factory.info(&instruction);
+
+        flow.kind = match instruction.flow_control() {
+            FlowControl::Next => LogicalFlowKind::Normal,
+            FlowControl::Call | FlowControl::IndirectCall => LogicalFlowKind::Call,
+            FlowControl::Return => LogicalFlowKind::Return,
+            _ => LogicalFlowKind::Branch,
+        };
+        flow.reads_flags = instruction.rflags_read() != 0;
+        flow.writes_flags = instruction.rflags_modified() != 0;
+        for used in info.used_memory() {
+            let (read, write) = access_read_write(used.access());
+            flow.reads_memory |= read;
+            flow.writes_memory |= write;
+        }
+
+        // `xor eax, eax` and friends do not depend on the register's old value
+        let zero_idiom =
+            matches!(instruction.mnemonic(), Mnemonic::Xor | Mnemonic::Sub | Mnemonic::Sbb)
+                && instruction.op_count() == 2
+                && instruction.op0_kind() == OpKind::Register
+                && instruction.op1_kind() == OpKind::Register
+                && instruction.op0_register() == instruction.op1_register();
+
+        // Explicit operands first, in operand order, so that the reads of the two sides pair up
+        // by position
+        let mut explicit = Vec::<Register>::new();
+        let mut writes = Vec::<Register>::new();
+        for op in 0..instruction.op_count() {
+            match instruction.op_kind(op) {
+                OpKind::Register => {
+                    let reg = instruction.op_register(op);
+                    explicit.push(reg);
+                    let (read, write) = access_read_write(info.op_access(op));
+                    if read && !zero_idiom {
+                        push_logical(&mut flow.reads, reg);
+                    }
+                    if write {
+                        writes.push(reg);
+                    }
+                }
+                OpKind::Memory => {
+                    for reg in [instruction.memory_base(), instruction.memory_index()] {
+                        if reg != Register::None {
+                            explicit.push(reg);
+                            push_logical(&mut flow.reads, reg);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Implicit registers (cdq, rep movsd, mul, ...) are fixed by the instruction
+        for used in info.used_registers() {
+            if explicit.contains(&used.register()) {
+                continue;
+            }
+            let (read, write) = access_read_write(used.access());
+            if read {
+                push_logical(&mut flow.reads, used.register());
+            }
+            if write {
+                writes.push(used.register());
+            }
+        }
+        for reg in writes {
+            push_logical(&mut flow.writes, reg);
+        }
+        Ok(flow)
+    }
+
     fn infer_function_size(
         &self,
         symbol: &Symbol,
@@ -447,6 +582,59 @@ impl InstructionFormatterOutput<'_> {
         if let Err(e) = (self.cb)(InstructionPart::signed(value)) {
             self.error = Some(e);
         }
+    }
+}
+
+const REG_EAX: u8 = 0;
+const REG_ECX: u8 = 1;
+const REG_EDX: u8 = 2;
+const REG_EBX: u8 = 3;
+const REG_EBP: u8 = 5;
+const REG_ESI: u8 = 6;
+const REG_EDI: u8 = 7;
+const PART_32: u8 = 0;
+const PART_16: u8 = 1;
+const PART_LOW8: u8 = 2;
+const PART_HIGH8: u8 = 3;
+
+/// The renamable 32-bit general register `reg` belongs to (not esp).
+fn logical_register(reg: Register) -> Option<LogicalRegister> {
+    let family = match reg.full_register32() {
+        Register::EAX => REG_EAX,
+        Register::ECX => REG_ECX,
+        Register::EDX => REG_EDX,
+        Register::EBX => REG_EBX,
+        Register::EBP => REG_EBP,
+        Register::ESI => REG_ESI,
+        Register::EDI => REG_EDI,
+        _ => return None,
+    };
+    let part = match reg {
+        Register::AH | Register::CH | Register::DH | Register::BH => PART_HIGH8,
+        _ => match reg.size() {
+            4 => PART_32,
+            2 => PART_16,
+            1 => PART_LOW8,
+            _ => return None,
+        },
+    };
+    Some(LogicalRegister { family, part })
+}
+
+fn push_logical(out: &mut Vec<LogicalRegister>, reg: Register) {
+    if let Some(reg) = logical_register(reg) {
+        out.push(reg);
+    }
+}
+
+/// (reads, writes) of an operand access. A conditional write keeps the old value on one path,
+/// so it reads it too.
+fn access_read_write(access: OpAccess) -> (bool, bool) {
+    match access {
+        OpAccess::Read | OpAccess::CondRead => (true, false),
+        OpAccess::Write => (false, true),
+        OpAccess::CondWrite | OpAccess::ReadWrite | OpAccess::ReadCondWrite => (true, true),
+        OpAccess::None | OpAccess::NoMemAccess => (false, false),
     }
 }
 
@@ -583,6 +771,57 @@ impl FormatterOutput for InstructionFormatterOutput<'_> {
 mod test {
     use super::*;
     use crate::obj::{Relocation, ResolvedRelocation};
+
+    fn flow(code: &[u8]) -> LogicalFlow {
+        let arch = ArchX86 { arch: Architecture::X86, endianness: object::Endianness::Little };
+        let opcode =
+            arch.scan_instructions_internal(0, code, 0, &[], &DiffObjConfig::default()).unwrap()[0]
+                .opcode;
+        arch.logical_flow(
+            ResolvedInstructionRef {
+                ins_ref: InstructionRef {
+                    address: 0,
+                    size: code.len() as u8,
+                    opcode,
+                    branch_dest: None,
+                },
+                code,
+                ..Default::default()
+            },
+            &DiffObjConfig::default(),
+        )
+        .unwrap()
+    }
+
+    fn reg(family: u8, part: u8) -> LogicalRegister { LogicalRegister { family, part } }
+
+    #[test]
+    fn test_logical_flow() {
+        // mov eax, [ebx+esi*4+8]: reads ebx then esi, writes eax
+        let f = flow(&[0x8b, 0x44, 0xb3, 0x08]);
+        assert_eq!(f.reads, [reg(REG_EBX, PART_32), reg(REG_ESI, PART_32)]);
+        assert_eq!(f.writes, [reg(REG_EAX, PART_32)]);
+        assert!(f.reads_memory && !f.writes_memory);
+        // add [eax], dl: reads eax (address) and dl, writes memory and flags
+        let f = flow(&[0x00, 0x10]);
+        assert_eq!(f.reads, [reg(REG_EAX, PART_32), reg(REG_EDX, PART_LOW8)]);
+        assert!(f.writes.is_empty() && f.writes_memory && f.writes_flags);
+        // xor eax, eax does not read eax
+        let f = flow(&[0x33, 0xc0]);
+        assert!(f.reads.is_empty());
+        assert_eq!(f.writes, [reg(REG_EAX, PART_32)]);
+        // cdq: implicit read of eax, write of edx
+        let f = flow(&[0x99]);
+        assert_eq!(f.reads, [reg(REG_EAX, PART_32)]);
+        assert_eq!(f.writes, [reg(REG_EDX, PART_32)]);
+        // push esi: esp is not tracked; writes memory
+        let f = flow(&[0x56]);
+        assert_eq!(f.reads, [reg(REG_ESI, PART_32)]);
+        assert!(f.writes.is_empty() && f.writes_memory);
+        // call rel32 / ret
+        assert_eq!(flow(&[0xe8, 0, 0, 0, 0]).kind, LogicalFlowKind::Call);
+        assert_eq!(flow(&[0xc3]).kind, LogicalFlowKind::Return);
+    }
 
     #[test]
     fn test_scan_instructions() {

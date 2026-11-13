@@ -389,6 +389,50 @@ impl dyn Arch {
     }
 }
 
+/// A general-purpose register as the logical diff sees it: `family` names the full register
+/// (x86: eax = 0 .. edi = 7), `part` which piece of it (x86: 32-bit, 16-bit, low byte, high byte).
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct LogicalRegister {
+    pub family: u8,
+    pub part: u8,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub enum LogicalFlowKind {
+    #[default]
+    Normal,
+    Call,
+    Return,
+    Branch,
+}
+
+/// The registers and memory an instruction reads and writes, for the logical diff.
+#[derive(Debug, Clone, Default)]
+pub struct LogicalFlow {
+    /// Renamable registers read: explicit operands in operand order, then implicit ones.
+    pub reads: Vec<LogicalRegister>,
+    /// Renamable registers written (a partial write counts as a write of the whole register).
+    pub writes: Vec<LogicalRegister>,
+    pub reads_memory: bool,
+    pub writes_memory: bool,
+    /// Reads / changes condition flags.
+    pub reads_flags: bool,
+    pub writes_flags: bool,
+    pub kind: LogicalFlowKind,
+}
+
+/// Calling convention facts the logical diff needs (register families).
+#[derive(Debug, Copy, Clone)]
+pub struct LogicalAbi {
+    /// Registers a call may take arguments in; a call clobbers them.
+    pub call_registers: &'static [u8],
+    /// Registers a return hands back to the caller.
+    pub return_registers: &'static [u8],
+    /// Registers the routine must preserve: their values at entry are interchangeable (a
+    /// routine that saves ebx against one that saves esi).
+    pub callee_saved: &'static [u8],
+}
+
 pub trait Arch: Any + Debug + Send + Sync {
     /// Finishes arch-specific initialization that must be done after sections have been combined.
     fn post_init(&mut self, _sections: &[Section], _symbols: &[Symbol], _symbol_indices: &[usize]) {
@@ -473,6 +517,23 @@ pub trait Arch: Any + Debug + Send + Sync {
 
     fn guess_ins_data_type(&self, ins: ResolvedInstructionRef, bytes: &[u8]) -> Option<DataType> {
         self.guess_data_type(Some(ins), ins.relocation, bytes)
+    }
+
+    /// Logical diff: the calling convention, or None when the architecture has no logical diff
+    /// support (functions then compare as usual).
+    fn logical_abi(&self) -> Option<LogicalAbi> { None }
+
+    /// Logical diff: the renamable register an instruction argument names (not the stack
+    /// pointer).
+    fn logical_register(&self, _arg: &InstructionArg) -> Option<LogicalRegister> { None }
+
+    /// Logical diff: what an instruction reads and writes.
+    fn logical_flow(
+        &self,
+        _resolved: ResolvedInstructionRef,
+        _diff_config: &DiffObjConfig,
+    ) -> Result<LogicalFlow> {
+        Ok(LogicalFlow::default())
     }
 
     fn symbol_hover(&self, _obj: &Object, _symbol_index: usize) -> Vec<HoverItem> { Vec::new() }

@@ -92,7 +92,8 @@ pub fn run(args: Args) -> Result<()> {
 
 fn generate(args: GenerateArgs) -> Result<()> {
     let base_diff_config = diff::DiffObjConfig {
-        function_reloc_diffs: diff::FunctionRelocDiffs::None,
+        function_reloc_diffs_name_address: false,
+        function_reloc_diffs_data_value: false,
         combine_data_sections: true,
         combine_text_sections: true,
         ppc_calculate_pool_relocations: false,

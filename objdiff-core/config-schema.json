@@ -1,29 +1,25 @@
 {
   "properties": [
     {
-      "id": "functionRelocDiffs",
-      "type": "choice",
-      "default": "name_address",
-      "name": "Function relocation diffs",
-      "description": "How relocation targets will be diffed in the function view.",
-      "items": [
-        {
-          "value": "none",
-          "name": "None"
-        },
-        {
-          "value": "name_address",
-          "name": "Name or address"
-        },
-        {
-          "value": "data_value",
-          "name": "Data value"
-        },
-        {
-          "value": "all",
-          "name": "Name or address, data value"
-        }
-      ]
+      "id": "functionRelocDiffs.nameAddress",
+      "type": "boolean",
+      "default": true,
+      "name": "Name or address",
+      "description": "Relocation targets in the function view must have the same name, the same address in the same section, or the same original address (symbol_addresses)."
+    },
+    {
+      "id": "functionRelocDiffs.dataValue",
+      "type": "boolean",
+      "default": false,
+      "name": "Data value",
+      "description": "Data targeted by relocations in the function view must have the same value."
+    },
+    {
+      "id": "functionRelocDiffs.logical",
+      "type": "boolean",
+      "default": false,
+      "name": "Logical",
+      "description": "Compare what the code does instead of how it is written: registers may be allocated differently as long as every register read gets its value from the same instruction on both sides, and short runs of independent instructions may be in a different order. Supported on x86 (32-bit); other architectures compare as usual."
     },
     {
       "id": "demangler",
@@ -403,7 +399,9 @@
       "name": "General",
       "properties": [
         "preferredStringEncoding",
-        "functionRelocDiffs",
+        "functionRelocDiffs.nameAddress",
+        "functionRelocDiffs.dataValue",
+        "functionRelocDiffs.logical",
         "demangler",
         "showSymbolSizes",
         "spaceBetweenArgs",

@@ -26,8 +26,78 @@ pub mod code;
 pub mod data;
 pub mod demangler;
 pub mod display;
+mod logical;
 
 include!(concat!(env!("OUT_DIR"), "/config.gen.rs"));
+
+/// The former `functionRelocDiffs` choice (`none`, `name_address`, `data_value`, `all`), now the
+/// `functionRelocDiffs.nameAddress` and `functionRelocDiffs.dataValue` checkboxes. Still accepted
+/// by [`DiffObjConfig::set_option_str`] (objdiff.json options, `-c`).
+pub const LEGACY_FUNCTION_RELOC_DIFFS: &str = "functionRelocDiffs";
+
+/// Whether an option key names `property`, counting the legacy `functionRelocDiffs` key as
+/// naming both relocation checkboxes.
+pub fn option_key_sets(key: &str, property: ConfigPropertyId) -> bool {
+    if key.eq_ignore_ascii_case(LEGACY_FUNCTION_RELOC_DIFFS)
+        || key.eq_ignore_ascii_case("function_reloc_diffs")
+    {
+        return matches!(
+            property,
+            ConfigPropertyId::FunctionRelocDiffsNameAddress
+                | ConfigPropertyId::FunctionRelocDiffsDataValue
+        );
+    }
+    key.parse::<ConfigPropertyId>() == Ok(property)
+}
+
+impl DiffObjConfig {
+    /// Set an option by id (`x86.formatter`, `functionRelocDiffs.logical`, ...) from a string
+    /// value, with an error that lists the accepted values.
+    pub fn set_option_str(&mut self, key: &str, value: &str) -> Result<()> {
+        if key.eq_ignore_ascii_case(LEGACY_FUNCTION_RELOC_DIFFS)
+            || key.eq_ignore_ascii_case("function_reloc_diffs")
+        {
+            let (name_address, data_value) = match value {
+                "none" => (false, false),
+                "name_address" => (true, false),
+                "data_value" => (false, true),
+                "all" => (true, true),
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Invalid value for {LEGACY_FUNCTION_RELOC_DIFFS}. Expected one of: none, \
+                         name_address, data_value, all"
+                    ));
+                }
+            };
+            self.function_reloc_diffs_name_address = name_address;
+            self.function_reloc_diffs_data_value = data_value;
+            return Ok(());
+        }
+        let id = key
+            .parse::<ConfigPropertyId>()
+            .map_err(|()| anyhow::anyhow!("Invalid configuration property: {key}"))?;
+        self.set_property_value_str(id, value).map_err(|()| {
+            let mut expected = String::new();
+            match id.kind() {
+                ConfigPropertyKind::Boolean => expected.push_str("true, false"),
+                ConfigPropertyKind::Choice(variants) => {
+                    for (idx, variant) in variants.iter().enumerate() {
+                        if idx > 0 {
+                            expected.push_str(", ");
+                        }
+                        expected.push_str(variant.value);
+                    }
+                }
+            }
+            anyhow::anyhow!("Invalid value for {}. Expected one of: {}", id.name(), expected)
+        })
+    }
+
+    /// Relocations are not compared at all (neither checkbox is set).
+    pub fn relax_reloc_diffs(&self) -> bool {
+        !self.function_reloc_diffs_name_address && !self.function_reloc_diffs_data_value
+    }
+}
 
 impl DiffObjConfig {
     pub fn separator(&self) -> &'static str { if self.space_between_args { ", " } else { "," } }

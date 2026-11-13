@@ -8,9 +8,9 @@ use alloc::{
 use anyhow::{Context, Result, anyhow, ensure};
 
 use super::{
-    DiffObjConfig, FunctionRelocDiffs, InstructionArgDiffIndex, InstructionBranchFrom,
-    InstructionBranchTo, InstructionDiffKind, InstructionDiffRow, PreferredStringEncoding,
-    SymbolDiff, display::display_ins_data_literals,
+    DiffObjConfig, InstructionArgDiffIndex, InstructionBranchFrom, InstructionBranchTo,
+    InstructionDiffKind, InstructionDiffRow, PreferredStringEncoding, SymbolDiff,
+    display::display_ins_data_literals,
 };
 use crate::{
     diff::{address_eq, section_name_eq, symbol_name_matches},
@@ -54,7 +54,7 @@ pub fn no_diff_code(
 }
 
 const PENALTY_IMM_DIFF: u64 = 1;
-const PENALTY_REG_DIFF: u64 = 5;
+pub(crate) const PENALTY_REG_DIFF: u64 = 5;
 const PENALTY_REPLACE: u64 = 60;
 const PENALTY_INSERT_DELETE: u64 = 100;
 
@@ -123,7 +123,9 @@ pub fn diff_code(
     resolve_branches(&right_ops, &mut right_rows);
 
     let mut diff_state = InstructionDiffState::default();
+    let mut row_penalty = Vec::with_capacity(left_rows.len());
     for (left_row, right_row) in left_rows.iter_mut().zip(right_rows.iter_mut()) {
+        let score_before = diff_state.diff_score;
         let result = diff_instruction(
             left_obj,
             right_obj,
@@ -140,6 +142,21 @@ pub fn diff_code(
         right_row.kind = result.kind;
         left_row.arg_diff = result.left_args_diff;
         right_row.arg_diff = result.right_args_diff;
+        row_penalty.push(diff_state.diff_score - score_before);
+    }
+    if diff_config.function_reloc_diffs_logical
+        && let Some(score) = super::logical::logical_diff(
+            left_obj,
+            right_obj,
+            left_symbol_idx,
+            right_symbol_idx,
+            &mut left_rows,
+            &mut right_rows,
+            &row_penalty,
+            diff_config,
+        )?
+    {
+        diff_state.diff_score = score;
     }
 
     let max_score = left_ops.len() as u64 * PENALTY_INSERT_DELETE;
@@ -289,14 +306,14 @@ fn ins_data_literals_eq(
     left_literals == right_literals
 }
 
-fn reloc_eq(
+pub(crate) fn reloc_eq(
     left_obj: &Object,
     right_obj: &Object,
     left_ins: ResolvedInstructionRef,
     right_ins: ResolvedInstructionRef,
     diff_config: &DiffObjConfig,
 ) -> bool {
-    let relax_reloc_diffs = diff_config.function_reloc_diffs == FunctionRelocDiffs::None;
+    let relax_reloc_diffs = diff_config.relax_reloc_diffs();
     let (left_reloc, right_reloc) = match (left_ins.relocation, right_ins.relocation) {
         (Some(left_reloc), Some(right_reloc)) => (left_reloc, right_reloc),
         // If relocations are relaxed, match if left is missing a reloc
@@ -310,12 +327,14 @@ fn reloc_eq(
     if relax_reloc_diffs {
         return true;
     }
-    if matches!(
-        diff_config.function_reloc_diffs,
-        FunctionRelocDiffs::NameAddress | FunctionRelocDiffs::All
-    ) && super::virtual_address_eq(left_reloc, right_reloc)
-    {
-        return true;
+    let name_address = diff_config.function_reloc_diffs_name_address;
+    let data_value = diff_config.function_reloc_diffs_data_value;
+    if name_address && super::virtual_address_eq(left_reloc, right_reloc) {
+        // Same original address; the section names may differ (linked target)
+        return !data_value
+            || left_reloc.symbol.kind != SymbolKind::Object
+            || right_reloc.symbol.size == 0
+            || ins_data_literals_eq(left_obj, right_obj, left_ins, right_ins, diff_config);
     }
 
     let symbol_name_addend_matches = symbol_name_matches(left_reloc.symbol, right_reloc.symbol)
@@ -326,7 +345,7 @@ fn reloc_eq(
                 return false;
             };
             let mut name_ok = false;
-            if diff_config.function_reloc_diffs == FunctionRelocDiffs::DataValue {
+            if !name_address {
                 // Ignore names entirely
                 name_ok = true;
             } else if left_reloc.symbol.flags.contains(SymbolFlag::CompilerGenerated)
@@ -339,7 +358,7 @@ fn reloc_eq(
                 name_ok = true;
             }
             let mut value_ok = false;
-            if diff_config.function_reloc_diffs == FunctionRelocDiffs::NameAddress {
+            if !data_value {
                 // Ignore data values entirely
                 value_ok = true;
             } else if left_reloc.symbol.kind != SymbolKind::Object {
@@ -373,7 +392,7 @@ fn arg_eq(
             InstructionArg::Value(r) => l.loose_eq(r),
             // If relocations are relaxed, match if left is a constant and right is a reloc
             // Useful for instances where the target object is created without relocations
-            InstructionArg::Reloc => diff_config.function_reloc_diffs == FunctionRelocDiffs::None,
+            InstructionArg::Reloc => diff_config.relax_reloc_diffs(),
             _ => false,
         },
         InstructionArg::Reloc => {
@@ -388,7 +407,7 @@ fn arg_eq(
             }
             // If relocations are relaxed, match if left is a constant and right is a reloc
             // Useful for instances where the target object is created without relocations
-            InstructionArg::Reloc => diff_config.function_reloc_diffs == FunctionRelocDiffs::None,
+            InstructionArg::Reloc => diff_config.relax_reloc_diffs(),
             _ => false,
         },
     }
