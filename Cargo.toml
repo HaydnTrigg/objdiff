@@ -14,7 +14,7 @@ default-members = [
 resolver = "3"
 
 [workspace.package]
-version = "1337.420.70"
+version = "1337.420.71"
 authors = ["Luke Street <luke@street.dev>"]
 edition = "2024"
 license = "MIT OR Apache-2.0"
