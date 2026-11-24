@@ -3,9 +3,9 @@ use core::cmp::Ordering;
 
 use anyhow::{Context, Result, anyhow, bail};
 use iced_x86::{
-    Decoder, DecoderOptions, DecoratorKind, FlowControl, FormatterOutput, FormatterTextKind,
-    GasFormatter, Instruction, InstructionInfoFactory, IntelFormatter, MasmFormatter, Mnemonic,
-    NasmFormatter, NumberKind, OpAccess, OpKind, Register,
+    CpuidFeature, Decoder, DecoderOptions, DecoratorKind, FlowControl, FormatterOutput,
+    FormatterTextKind, GasFormatter, Instruction, InstructionInfoFactory, IntelFormatter,
+    MasmFormatter, Mnemonic, NasmFormatter, NumberKind, OpAccess, OpKind, Register,
 };
 use object::{Endian as _, Object as _, ObjectSection as _, elf, pe};
 
@@ -479,7 +479,7 @@ impl Arch for ArchX86 {
                     explicit.push(reg);
                     let (read, write) = access_read_write(info.op_access(op));
                     if read && !zero_idiom {
-                        push_logical(&mut flow.reads, reg);
+                        push_read(&mut flow, reg);
                     }
                     if write {
                         writes.push(reg);
@@ -489,28 +489,50 @@ impl Arch for ArchX86 {
                     for reg in [instruction.memory_base(), instruction.memory_index()] {
                         if reg != Register::None {
                             explicit.push(reg);
-                            push_logical(&mut flow.reads, reg);
+                            push_read(&mut flow, reg);
                         }
                     }
                 }
                 _ => {}
             }
         }
-        // Implicit registers (cdq, rep movsd, mul, ...) are fixed by the instruction
+        // Implicit registers (cdq, rep movsd, mul, push's esp, ...) are fixed by the instruction
         for used in info.used_registers() {
             if explicit.contains(&used.register()) {
                 continue;
             }
             let (read, write) = access_read_write(used.access());
             if read {
-                push_logical(&mut flow.reads, used.register());
+                push_read(&mut flow, used.register());
             }
             if write {
                 writes.push(used.register());
             }
         }
         for reg in writes {
-            push_logical(&mut flow.writes, reg);
+            if logical_register(reg).is_some() {
+                push_logical(&mut flow.writes, reg);
+            } else if let Some(id) = fixed_register(reg) {
+                push_fixed(&mut flow.fixed_writes, id);
+            }
+        }
+        // Every x87 / MMX instruction depends on and changes the register stack (its top, the
+        // tag and status words, the control word's rounding), whether or not it names a register
+        if instruction.cpuid_features().iter().any(|f| {
+            matches!(
+                f,
+                CpuidFeature::FPU
+                    | CpuidFeature::FPU287
+                    | CpuidFeature::FPU287XL_ONLY
+                    | CpuidFeature::FPU387
+                    | CpuidFeature::FPU387SL_ONLY
+                    | CpuidFeature::MMX
+                    | CpuidFeature::D3NOW
+                    | CpuidFeature::D3NOWEXT
+            )
+        }) {
+            push_fixed(&mut flow.fixed_reads, FIXED_FPU_STACK);
+            push_fixed(&mut flow.fixed_writes, FIXED_FPU_STACK);
         }
         Ok(flow)
     }
@@ -624,6 +646,36 @@ fn logical_register(reg: Register) -> Option<LogicalRegister> {
 fn push_logical(out: &mut Vec<LogicalRegister>, reg: Register) {
     if let Some(reg) = logical_register(reg) {
         out.push(reg);
+    }
+}
+
+/// `LogicalFlow::fixed_*` id of the x87 register stack (ST0-ST7, aliased by MM0-MM7).
+const FIXED_FPU_STACK: u16 = u16::MAX;
+
+/// The `LogicalFlow::fixed_*` id of a register that is not renamed: the stack pointer, the
+/// x87 stack, segment and vector registers.
+fn fixed_register(reg: Register) -> Option<u16> {
+    if reg == Register::None || logical_register(reg).is_some() {
+        return None;
+    }
+    if reg.is_st() || reg.is_mm() {
+        return Some(FIXED_FPU_STACK);
+    }
+    Some(reg.full_register() as u16)
+}
+
+fn push_fixed(out: &mut Vec<u16>, id: u16) {
+    if !out.contains(&id) {
+        out.push(id);
+    }
+}
+
+/// A register read: renamable ones in `reads`, the others in `fixed_reads`.
+fn push_read(flow: &mut LogicalFlow, reg: Register) {
+    if logical_register(reg).is_some() {
+        push_logical(&mut flow.reads, reg);
+    } else if let Some(id) = fixed_register(reg) {
+        push_fixed(&mut flow.fixed_reads, id);
     }
 }
 
@@ -818,6 +870,23 @@ mod test {
         let f = flow(&[0x56]);
         assert_eq!(f.reads, [reg(REG_ESI, PART_32)]);
         assert!(f.writes.is_empty() && f.writes_memory);
+        // ... but it reads and changes esp, which is fixed
+        let esp = fixed_register(Register::ESP).unwrap();
+        assert!(f.fixed_reads.contains(&esp));
+        assert_eq!(f.fixed_writes, [esp]);
+        // lea eax, [esp+8]: a fixed read of esp
+        let f = flow(&[0x8d, 0x44, 0x24, 0x08]);
+        assert!(f.fixed_reads.contains(&esp));
+        assert!(f.fixed_writes.is_empty());
+        // fmul dword ptr [esi+0x24], fptan, fld1: all use the x87 stack
+        for code in [&[0xd8, 0x4e, 0x24][..], &[0xd9, 0xf2], &[0xd9, 0xe8]] {
+            let f = flow(code);
+            assert!(f.fixed_reads.contains(&FIXED_FPU_STACK), "{code:x?}");
+            assert!(f.fixed_writes.contains(&FIXED_FPU_STACK), "{code:x?}");
+        }
+        // mov ecx, esi: no fixed registers
+        let f = flow(&[0x8b, 0xce]);
+        assert!(f.fixed_reads.is_empty() && f.fixed_writes.is_empty());
         // call rel32 / ret
         assert_eq!(flow(&[0xe8, 0, 0, 0, 0]).kind, LogicalFlowKind::Call);
         assert_eq!(flow(&[0xc3]).kind, LogicalFlowKind::Return);

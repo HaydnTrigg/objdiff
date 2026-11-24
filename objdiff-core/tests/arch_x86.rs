@@ -140,3 +140,45 @@ fn read_delphi_omf() {
     let output = common::display_diff(&obj, &diff, symbol_idx, &diff_config);
     insta::assert_snapshot!(output);
 }
+
+// Logical diff: a single instruction moved past instructions it does not depend on matches;
+// x87 instructions keep their order, and moves past a use of the moved register or of esp do
+// not match (data/x86/logical_move/*.c)
+#[test]
+#[cfg(feature = "x86")]
+fn diff_x86_logical_move() {
+    let diff_config = diff::DiffObjConfig {
+        function_reloc_diffs_name_address: false,
+        function_reloc_diffs_logical: true,
+        ..Default::default()
+    };
+    let target = obj::read::parse(
+        include_object!("data/x86/logical_move/target.obj"),
+        &diff_config,
+        diff::DiffSide::Target,
+    )
+    .unwrap();
+    let base = obj::read::parse(
+        include_object!("data/x86/logical_move/base.obj"),
+        &diff_config,
+        diff::DiffSide::Base,
+    )
+    .unwrap();
+    let result = diff::diff_objs(
+        Some(&target),
+        Some(&base),
+        None,
+        &diff_config,
+        &diff::MappingConfig::default(),
+    )
+    .unwrap();
+    let left = result.left.unwrap();
+    let percent = |name: &str| {
+        let idx = target.symbols.iter().position(|s| s.name == name).unwrap();
+        left.symbols[idx].match_percent.unwrap()
+    };
+    assert_eq!(percent("_moved"), 100.0);
+    assert!(percent("_fpu_order") < 100.0);
+    assert!(percent("_dependent") < 100.0);
+    assert!(percent("_stack") < 100.0);
+}

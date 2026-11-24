@@ -19,7 +19,7 @@
       "type": "boolean",
       "default": false,
       "name": "Logical",
-      "description": "Compare what the code does instead of how it is written: registers may be allocated differently as long as every register read gets its value from the same instruction on both sides, and short runs of independent instructions may be in a different order. Supported on x86 (32-bit); other architectures compare as usual."
+      "description": "Compare what the code does instead of how it is written: registers may be allocated differently as long as every register read gets its value from the same instruction on both sides, short runs of independent instructions may be in a different order, and a single instruction may move a few rows past instructions it does not depend on (x87 instructions keep their order among themselves). Supported on x86 (32-bit); other architectures compare as usual."
     },
     {
       "id": "demangler",

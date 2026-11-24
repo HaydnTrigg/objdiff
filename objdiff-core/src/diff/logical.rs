@@ -10,7 +10,11 @@
 //! - At a call, argument registers loaded since the previous call and not read since must come
 //!   from the same row on both sides (a swapped `mov eax, A` / `mov edx, B` is a real
 //!   difference). The same goes for the return register at a return.
-//! - Short runs of instructions that do not depend on each other may be in a different order.
+//! - Short runs of instructions that do not depend on each other may be in a different order,
+//!   and a single instruction may move a few rows past instructions it does not depend on
+//!   (the strict diff shows that as a deletion on one side and an insertion on the other).
+//!   Registers that are not renamed (esp, the x87 register stack) count as dependencies, so
+//!   x87 instructions keep their order among themselves.
 //!
 //! Register values are tracked in instruction order without following branches, which is
 //! enough because both sides have the same shape wherever this matters.
@@ -31,6 +35,9 @@ use crate::{
 
 /// Longest run of instructions that may be reordered.
 const MAX_WINDOW: usize = 4;
+
+/// Farthest (in rows) a single instruction may move past instructions it does not depend on.
+const MAX_MOVE: usize = 8;
 
 struct Ins<'a> {
     resolved: ResolvedInstructionRef<'a>,
@@ -242,14 +249,63 @@ impl Logic<'_> {
         let flows = range.filter_map(|t| side[t].as_ref().map(|ins| &ins.flow)).collect::<Vec<_>>();
         flows.iter().enumerate().all(|(x, fx)| {
             fx.kind == LogicalFlowKind::Normal
-                && flows.iter().enumerate().all(|(y, fy)| {
-                    x == y
-                        || !(fx.writes.iter().any(|w| {
-                            fy.reads.iter().chain(&fy.writes).any(|o| o.family == w.family)
-                        }) || fx.writes_memory && (fy.reads_memory || fy.writes_memory)
-                            || fx.writes_flags && (fy.reads_flags || fy.writes_flags))
-                })
+                && flows.iter().enumerate().all(|(y, fy)| x == y || !writes_into(fx, fy))
         })
+    }
+
+    /// The instruction of `side` at row `from` can move to row `to`: it and every instruction
+    /// it passes are plain instructions that do not depend on each other.
+    fn movable(&self, side: &[Option<Ins>], from: usize, to: usize) -> bool {
+        let Some(moved) = &side[from] else { return false };
+        let between = if from < to { from + 1..to + 1 } else { to..from };
+        moved.flow.kind == LogicalFlowKind::Normal
+            && between.filter_map(|t| side[t].as_ref()).all(|other| {
+                other.flow.kind == LogicalFlowKind::Normal
+                    && !writes_into(&moved.flow, &other.flow)
+                    && !writes_into(&other.flow, &moved.flow)
+            })
+    }
+
+    /// An instruction the strict diff left unpaired on one side (a deletion at left row `a`
+    /// or an insertion at right row `a`) that is the same instruction as one unpaired on the
+    /// other side a few rows away, moved past instructions it does not depend on. Returns the
+    /// window covering both rows, with the two rows' partners swapped.
+    fn find_move(&self, a: usize, covered: &[bool]) -> Option<(Range<usize>, Vec<usize>)> {
+        let n = self.left.len();
+        let identity = (0..n).collect::<Vec<_>>();
+        let left_only = self.left[a].is_some() && self.right[a].is_none();
+        let right_only = self.left[a].is_none() && self.right[a].is_some();
+        if !left_only && !right_only {
+            return None;
+        }
+        for b in a + 1..n.min(a + 1 + MAX_MOVE) {
+            if covered[b] {
+                break;
+            }
+            // Nothing may branch into the rows the instruction moves across
+            if self.left_rows[b].branch_from.is_some() || self.right_rows[b].branch_from.is_some() {
+                break;
+            }
+            let pair = if left_only {
+                self.left[b].is_none() && self.right[b].is_some()
+            } else {
+                self.left[b].is_some() && self.right[b].is_none()
+            };
+            if !pair {
+                continue;
+            }
+            // Left row `l` (deleted) pairs with right row `r` (inserted)
+            let (l, r) = if left_only { (a, b) } else { (b, a) };
+            if self.args_equal(l, r, &identity)
+                && self.movable(&self.left, l, r)
+                && self.movable(&self.right, r, l)
+            {
+                let mut order = (a..=b).collect::<Vec<_>>();
+                order.swap(0, b - a);
+                return Some((a..b + 1, order));
+            }
+        }
+        None
     }
 
     /// Runs of rows that line up only when the right side is reordered, with the order.
@@ -295,6 +351,22 @@ impl Logic<'_> {
                 None => i += 1,
             }
         }
+        // Then single instructions that moved: a deletion and an insertion of the same thing
+        let mut covered = vec![false; n];
+        for (range, _) in &windows {
+            covered[range.clone()].fill(true);
+        }
+        let mut a = 0;
+        while a < n {
+            match (!covered[a]).then(|| self.find_move(a, &covered)).flatten() {
+                Some((range, order)) => {
+                    covered[range.clone()].fill(true);
+                    a = range.end;
+                    windows.push((range, order));
+                }
+                None => a += 1,
+            }
+        }
         windows
     }
 
@@ -330,6 +402,15 @@ impl Logic<'_> {
         let mut used = vec![false; range.len()];
         search(self, &range, identity, &mut order, &mut used).then_some(order)
     }
+}
+
+/// `a` changes something `b` reads or changes (a register, the memory, the flags), so the two
+/// cannot swap places.
+fn writes_into(a: &LogicalFlow, b: &LogicalFlow) -> bool {
+    a.writes.iter().any(|w| b.reads.iter().chain(&b.writes).any(|o| o.family == w.family))
+        || a.fixed_writes.iter().any(|w| b.fixed_reads.contains(w) || b.fixed_writes.contains(w))
+        || a.writes_memory && (b.reads_memory || b.writes_memory)
+        || a.writes_flags && (b.reads_flags || b.writes_flags)
 }
 
 /// Rework the strict diff of a function into the logical one. `row_penalty` holds the strict
@@ -374,7 +455,11 @@ pub(crate) fn logical_diff(
             let equal = ctx.simulate(&partner, &left_of);
             // A reordering only stands if it makes the whole run match
             let before = windows.len();
-            windows.retain(|(range, _)| range.clone().all(|i| equal[i]));
+            windows.retain(|(range, _)| {
+                range
+                    .clone()
+                    .all(|i| equal[i] || ctx.left[i].is_none() && ctx.right[partner[i]].is_none())
+            });
             if windows.len() == before {
                 break (equal, partner);
             }
@@ -383,7 +468,8 @@ pub(crate) fn logical_diff(
 
     let mut score = 0;
     for (i, &j) in partner.iter().enumerate() {
-        if equal[i] {
+        if equal[i] || left_rows[i].ins_ref.is_none() && right_rows[j].ins_ref.is_none() {
+            // Equal, or the empty halves of the rows a moved instruction left
             for row in [&mut left_rows[i], &mut right_rows[j]] {
                 row.kind = InstructionDiffKind::None;
                 row.arg_diff.clear();

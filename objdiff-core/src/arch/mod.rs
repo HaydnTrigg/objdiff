@@ -413,6 +413,11 @@ pub struct LogicalFlow {
     pub reads: Vec<LogicalRegister>,
     /// Renamable registers written (a partial write counts as a write of the whole register).
     pub writes: Vec<LogicalRegister>,
+    /// Registers that are not renamed (stack pointer, the x87 register stack, segment and
+    /// vector registers), by an arch-defined id. They are compared by name, so they only
+    /// matter for deciding whether two instructions may run in either order.
+    pub fixed_reads: Vec<u16>,
+    pub fixed_writes: Vec<u16>,
     pub reads_memory: bool,
     pub writes_memory: bool,
     /// Reads / changes condition flags.
